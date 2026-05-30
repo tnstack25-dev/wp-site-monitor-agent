@@ -84,6 +84,26 @@ class WPMA_Plugin {
 				'permission_callback' => array( __CLASS__, 'verify_rest_signature' ),
 			)
 		);
+
+		register_rest_route(
+			'wpma/v1',
+			'/backup',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'rest_create_backup' ),
+				'permission_callback' => array( __CLASS__, 'verify_rest_signature' ),
+			)
+		);
+
+		register_rest_route(
+			'wpma/v1',
+			'/backup-download/(?P<token>[A-Za-z0-9_-]{32,80})',
+			array(
+				'methods'             => 'GET',
+				'callback'            => array( __CLASS__, 'rest_download_backup' ),
+				'permission_callback' => array( __CLASS__, 'verify_backup_download_signature' ),
+			)
+		);
 	}
 
 	public static function rest_status() {
@@ -140,6 +160,182 @@ class WPMA_Plugin {
 				'message'          => empty( $result['error'] ) ? 'Remote scan complete.' : $result['error'],
 			)
 		);
+	}
+
+	public static function rest_create_backup() {
+		$result = self::create_source_backup();
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		$token = wp_generate_password( 48, false, false );
+		set_transient(
+			'wpma_backup_' . $token,
+			array(
+				'path' => $result['path'],
+				'name' => $result['name'],
+				'size' => $result['size'],
+			),
+			10 * MINUTE_IN_SECONDS
+		);
+
+		return rest_ensure_response(
+			array(
+				'success'      => true,
+				'site_url'     => home_url( '/' ),
+				'token'        => $token,
+				'file_name'    => $result['name'],
+				'file_size'    => $result['size'],
+				'download_url' => rest_url( 'wpma/v1/backup-download/' . $token ),
+			)
+		);
+	}
+
+	public static function verify_backup_download_signature( $request ) {
+		$settings = self::settings();
+		$token = (string) $request['token'];
+		$time = (int) $request->get_header( 'x-wpsmm-time' );
+		$signature = (string) $request->get_header( 'x-wpsmm-signature' );
+		if ( empty( $settings['secret'] ) || ! $time || ! $signature || abs( time() - $time ) > 300 ) {
+			return new WP_Error( 'wpma_bad_signature', 'Invalid or expired backup download signature.', array( 'status' => 403 ) );
+		}
+
+		$expected = hash_hmac( 'sha256', $time . '.' . $token, $settings['secret'] );
+		return hash_equals( $expected, $signature )
+			? true
+			: new WP_Error( 'wpma_bad_signature', 'Invalid backup download signature.', array( 'status' => 403 ) );
+	}
+
+	public static function rest_download_backup( $request ) {
+		$token = (string) $request['token'];
+		$data = get_transient( 'wpma_backup_' . $token );
+		$path = is_array( $data ) ? (string) ( $data['path'] ?? '' ) : '';
+		if ( ! self::backup_path_allowed( $path ) || ! is_readable( $path ) ) {
+			return new WP_Error( 'wpma_backup_missing', 'Backup file is missing or expired.', array( 'status' => 404 ) );
+		}
+
+		while ( ob_get_level() ) {
+			ob_end_clean();
+		}
+		ignore_user_abort( true );
+		nocache_headers();
+		header( 'Content-Type: application/zip' );
+		header( 'Content-Disposition: attachment; filename="' . basename( $path ) . '"' );
+		header( 'Content-Length: ' . filesize( $path ) );
+		header( 'X-Content-Type-Options: nosniff' );
+		$bytes = readfile( $path );
+		if ( false !== $bytes && $bytes > 0 ) {
+			delete_transient( 'wpma_backup_' . $token );
+			@unlink( $path );
+		}
+		exit;
+	}
+
+	private static function create_source_backup() {
+		if ( ! class_exists( 'ZipArchive' ) ) {
+			return new WP_Error( 'wpma_zip_missing', 'ZipArchive is not available on the child site.', array( 'status' => 500 ) );
+		}
+
+		$dir = self::prepare_backup_dir();
+		if ( ! is_dir( $dir ) || ! is_writable( $dir ) ) {
+			return new WP_Error( 'wpma_backup_dir', 'Child backup directory is not writable.', array( 'status' => 500 ) );
+		}
+
+		$name = 'wpma-source-' . gmdate( 'Ymd-His' ) . '-' . wp_generate_password( 16, false, false ) . '.zip';
+		$path = $dir . $name;
+		$zip = new ZipArchive();
+		if ( true !== $zip->open( $path, ZipArchive::CREATE | ZipArchive::OVERWRITE ) ) {
+			return new WP_Error( 'wpma_zip_create', 'Cannot create the child backup ZIP.', array( 'status' => 500 ) );
+		}
+
+		$root = ABSPATH;
+		$exclude = array( 'wp-content/uploads/wpsma-backups' );
+		$added_files = 0;
+		$added_dirs = 0;
+		$failed = array();
+		try {
+			$files = new RecursiveIteratorIterator(
+				new RecursiveDirectoryIterator( $root, FilesystemIterator::SKIP_DOTS ),
+				RecursiveIteratorIterator::SELF_FIRST
+			);
+			foreach ( $files as $file ) {
+				$relative = ltrim( str_replace( $root, '', $file->getPathname() ), '/\\' );
+				$normalized = str_replace( '\\', '/', $relative );
+				foreach ( $exclude as $excluded ) {
+					if ( $normalized === $excluded || 0 === strpos( $normalized, trailingslashit( $excluded ) ) ) {
+						continue 2;
+					}
+				}
+				if ( $file->isDir() ) {
+					if ( ! $zip->addEmptyDir( $relative ) ) {
+						$failed[] = $normalized;
+					}
+					$added_dirs++;
+				} elseif ( $file->isFile() ) {
+					if ( ! is_readable( $file->getPathname() ) || ! $zip->addFile( $file->getPathname(), $relative ) ) {
+						$failed[] = $normalized;
+					}
+					$added_files++;
+				}
+			}
+		} catch ( Throwable $e ) {
+			$zip->close();
+			@unlink( $path );
+			return new WP_Error( 'wpma_zip_read', 'Cannot read the complete child site filesystem: ' . $e->getMessage(), array( 'status' => 500 ) );
+		}
+		$zip->addFromString(
+			'wpma-backup-info.json',
+			wp_json_encode(
+				array(
+					'created_at'  => current_time( 'mysql' ),
+					'site'        => home_url( '/' ),
+					'added_files' => $added_files,
+					'added_dirs'  => $added_dirs,
+					'failed'      => $failed,
+				),
+				JSON_PRETTY_PRINT
+			)
+		);
+		if ( ! $zip->close() || ! is_file( $path ) ) {
+			@unlink( $path );
+			return new WP_Error( 'wpma_zip_close', 'Cannot finalize the child backup ZIP.', array( 'status' => 500 ) );
+		}
+		if ( ! empty( $failed ) ) {
+			@unlink( $path );
+			return new WP_Error( 'wpma_zip_incomplete', 'Backup stopped because some source files could not be added: ' . implode( ', ', array_slice( $failed, 0, 5 ) ), array( 'status' => 500 ) );
+		}
+
+		return array( 'path' => $path, 'name' => $name, 'size' => filesize( $path ) );
+	}
+
+	private static function prepare_backup_dir() {
+		$upload = wp_upload_dir();
+		$dir = trailingslashit( $upload['basedir'] ) . 'wpsma-backups/';
+		wp_mkdir_p( $dir );
+		if ( is_dir( $dir ) ) {
+			if ( ! file_exists( $dir . '.htaccess' ) ) {
+				file_put_contents( $dir . '.htaccess', "Require all denied\nDeny from all\n" );
+			}
+			if ( ! file_exists( $dir . 'web.config' ) ) {
+				file_put_contents( $dir . 'web.config', "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<configuration><system.webServer><authorization><deny users=\"*\" /></authorization></system.webServer></configuration>\n" );
+			}
+			if ( ! file_exists( $dir . 'index.php' ) ) {
+				file_put_contents( $dir . 'index.php', "<?php\n// Silence is golden.\n" );
+			}
+			foreach ( glob( $dir . '*.zip' ) ?: array() as $file ) {
+				if ( is_file( $file ) && filemtime( $file ) < time() - HOUR_IN_SECONDS ) {
+					@unlink( $file );
+				}
+			}
+		}
+		return $dir;
+	}
+
+	private static function backup_path_allowed( $path ) {
+		$upload = wp_upload_dir();
+		$base = realpath( trailingslashit( $upload['basedir'] ) . 'wpsma-backups/' );
+		$real = realpath( $path );
+		return $base && $real && 0 === strpos( $real, trailingslashit( $base ) );
 	}
 
 	public static function is_hidden() {
@@ -199,7 +395,7 @@ class WPMA_Plugin {
 		?>
 		<div class="wrap">
 			<h1><?php esc_html_e( 'WP Site Monitor Agent', 'wp-site-monitor-agent' ); ?></h1>
-			<p><?php esc_html_e( 'This child agent serves WP Site Monitor Manager. It exposes signed endpoints for remote malware scanning and health checks.', 'wp-site-monitor-agent' ); ?></p>
+			<p><?php esc_html_e( 'This child agent serves WP Site Monitor Manager. It exposes signed endpoints for remote source backups, malware scanning, and health checks.', 'wp-site-monitor-agent' ); ?></p>
 			<?php settings_errors( 'wpma_messages' ); ?>
 			<form method="post" action="">
 				<?php wp_nonce_field( 'wpma_save_settings', 'wpma_nonce' ); ?>
@@ -263,7 +459,7 @@ class WPMA_Plugin {
 		<hr>
 		<h2><?php esc_html_e( 'Access Log Viewer', 'wp-site-monitor-agent' ); ?></h2>
 		<p><?php esc_html_e( 'Shows the latest lines from the configured access log without opening the hosting control panel.', 'wp-site-monitor-agent' ); ?></p>
-		<form method="get" action="<?php echo esc_url( admin_url( 'options-general.php' ) ); ?>" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin:12px 0;">
+		<form method="get" action="<?php echo esc_url( admin_url( 'admin.php' ) ); ?>" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin:12px 0;">
 			<input type="hidden" name="page" value="wp-site-monitor-agent">
 			<label><?php esc_html_e( 'Log date', 'wp-site-monitor-agent' ); ?><br>
 				<input type="date" name="wpma_log_date" value="<?php echo esc_attr( $selected_date ); ?>">
@@ -278,7 +474,7 @@ class WPMA_Plugin {
 			<p>
 				<strong><?php esc_html_e( 'File:', 'wp-site-monitor-agent' ); ?></strong>
 				<code><?php echo esc_html( $path ); ?></code>
-				<a class="button button-small" href="<?php echo esc_url( add_query_arg( array( 'page' => 'wp-site-monitor-agent', 'wpma_log_date' => $selected_date, 'wpma_log_refresh' => time() ), admin_url( 'options-general.php' ) ) ); ?>"><?php esc_html_e( 'Refresh', 'wp-site-monitor-agent' ); ?></a>
+				<a class="button button-small" href="<?php echo esc_url( add_query_arg( array( 'page' => 'wp-site-monitor-agent', 'wpma_log_date' => $selected_date, 'wpma_log_refresh' => time() ), admin_url( 'admin.php' ) ) ); ?>"><?php esc_html_e( 'Refresh', 'wp-site-monitor-agent' ); ?></a>
 			</p>
 			<pre style="max-height:520px;overflow:auto;background:#101827;color:#e5eefb;padding:16px;border-radius:8px;white-space:pre-wrap;"><?php echo esc_html( self::read_log_tail( $path, $lines ) ); ?></pre>
 		<?php endif; ?>
@@ -409,7 +605,7 @@ class WPMA_Plugin {
 				$path = $file->getPathname();
 				$rel = ltrim( str_replace( $root, '', $path ), DIRECTORY_SEPARATOR );
 				$rel = str_replace( '\\', '/', $rel );
-				if ( preg_match( '~(^|/)(cache|wpsmm-backups|node_modules|vendor/composer|\.git|\.svn)(/|$)~i', $rel ) ) {
+				if ( preg_match( '~(^|/)(cache|wpsmm-backups|wpsma-backups|node_modules|vendor/composer|\.git|\.svn)(/|$)~i', $rel ) ) {
 					continue;
 				}
 				if ( ! preg_match( '~(\.php|\.phtml|\.php[0-9]?|\.js|\.htaccess)$~i', $path ) || $file->getSize() > 2 * 1024 * 1024 ) {
