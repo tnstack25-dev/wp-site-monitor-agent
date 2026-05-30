@@ -61,7 +61,7 @@ class WPMA_GitHub_Updater {
 			'download_link' => $release['package'] ?? '',
 			'last_updated'  => $release['published_at'] ?? '',
 			'sections'      => array(
-				'description' => 'Child agent for WP Site Monitor Manager: signed health checks, remote malware scanning, and access log viewer.',
+				'description' => 'Child agent for WP Site Monitor Manager: health status and access log viewer.',
 				'changelog'   => wp_kses_post( nl2br( (string) ( $release['body'] ?? 'No changelog provided.' ) ) ),
 			),
 		);

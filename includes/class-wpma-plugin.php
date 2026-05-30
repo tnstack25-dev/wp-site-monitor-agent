@@ -10,20 +10,32 @@ class WPMA_Plugin {
 	const INVENTORY_INTERVAL = 6 * HOUR_IN_SECONDS;
 
 	public static function init() {
+		self::cleanup_removed_feature_settings();
+		self::ensure_agent_secret();
 		add_action( 'admin_init', array( __CLASS__, 'maybe_upgrade' ) );
 		add_action( 'admin_menu', array( __CLASS__, 'admin_menu' ) );
+		add_action( 'admin_enqueue_scripts', array( __CLASS__, 'enqueue_admin_assets' ) );
 		add_action( 'admin_init', array( __CLASS__, 'handle_settings_save' ) );
 		add_action( 'admin_notices', array( __CLASS__, 'show_notice' ) );
 		add_filter( 'all_plugins', array( __CLASS__, 'hide_from_plugins_list' ) );
+		add_filter( 'user_has_cap', array( __CLASS__, 'grant_delegated_capabilities' ), 10, 4 );
+		add_filter( 'repu_allow_editor_capability', array( __CLASS__, 'allow_delegated_protected_capability' ), 10, 3 );
+		add_filter( 'map_meta_cap', array( __CLASS__, 'protect_sso_user_from_deletion' ), 20, 4 );
+		add_action( 'before_delete_user', array( __CLASS__, 'prevent_sso_user_deletion' ), 1 );
+		add_action( 'wpmu_delete_user', array( __CLASS__, 'prevent_sso_user_deletion' ), 1 );
+		add_filter( 'user_row_actions', array( __CLASS__, 'hide_sso_user_delete_action' ), 20, 2 );
 		add_action( 'rest_api_init', array( __CLASS__, 'register_rest_routes' ) );
 	}
 
 	public static function defaults() {
 		return array(
-			'secret'          => '',
 			'hide_agent'      => 0,
 			'access_log_path' => '',
 			'log_lines'       => 200,
+			'agent_secret'    => '',
+			'enable_sso'      => 0,
+			'sso_user_id'     => 0,
+			'authorized_users' => array(),
 		);
 	}
 
@@ -33,10 +45,23 @@ class WPMA_Plugin {
 		$settings['hide_agent'] = ! empty( $settings['hide_agent'] ) ? 1 : 0;
 		$settings['access_log_path'] = isset( $settings['access_log_path'] ) ? (string) $settings['access_log_path'] : '';
 		$settings['log_lines'] = min( 1000, max( 20, absint( $settings['log_lines'] ) ) );
+		$settings['agent_secret'] = isset( $settings['agent_secret'] ) ? (string) $settings['agent_secret'] : '';
+		$settings['enable_sso'] = ! empty( $settings['enable_sso'] ) ? 1 : 0;
+		$settings['sso_user_id'] = absint( $settings['sso_user_id'] );
+		$settings['authorized_users'] = self::sanitize_authorized_users( $settings['authorized_users'] );
 		return $settings;
 	}
 
+	private static function cleanup_removed_feature_settings() {
+		$settings = get_option( self::OPTION, array() );
+		if ( is_array( $settings ) && array_key_exists( 'secret', $settings ) ) {
+			unset( $settings['secret'] );
+			update_option( self::OPTION, $settings, false );
+		}
+	}
+
 	public static function activate() {
+		self::ensure_agent_secret();
 		update_option( 'wpma_plugin_version', WPMA_VERSION, false );
 	}
 
@@ -53,10 +78,13 @@ class WPMA_Plugin {
 		if ( is_array( $settings ) ) {
 			$settings = wp_parse_args( $settings, self::defaults() );
 			$settings = array(
-				'secret'          => isset( $settings['secret'] ) ? (string) $settings['secret'] : '',
 				'hide_agent'      => ! empty( $settings['hide_agent'] ) ? 1 : 0,
 				'access_log_path' => isset( $settings['access_log_path'] ) ? self::sanitize_log_path( $settings['access_log_path'] ) : '',
 				'log_lines'       => isset( $settings['log_lines'] ) ? min( 1000, max( 20, absint( $settings['log_lines'] ) ) ) : 200,
+				'agent_secret'    => isset( $settings['agent_secret'] ) ? (string) $settings['agent_secret'] : '',
+				'enable_sso'      => ! empty( $settings['enable_sso'] ) ? 1 : 0,
+				'sso_user_id'     => isset( $settings['sso_user_id'] ) ? absint( $settings['sso_user_id'] ) : 0,
+				'authorized_users' => isset( $settings['authorized_users'] ) ? self::sanitize_authorized_users( $settings['authorized_users'] ) : array(),
 			);
 			update_option( self::OPTION, $settings, false );
 		}
@@ -77,33 +105,34 @@ class WPMA_Plugin {
 
 		register_rest_route(
 			'wpma/v1',
-			'/malware-scan',
+			'/sso-ticket',
 			array(
 				'methods'             => 'POST',
-				'callback'            => array( __CLASS__, 'rest_malware_scan' ),
-				'permission_callback' => array( __CLASS__, 'verify_rest_signature' ),
+				'callback'            => array( __CLASS__, 'rest_create_sso_ticket' ),
+				'permission_callback' => '__return_true',
 			)
 		);
 
 		register_rest_route(
 			'wpma/v1',
-			'/backup',
+			'/inventory',
 			array(
 				'methods'             => 'POST',
-				'callback'            => array( __CLASS__, 'rest_create_backup' ),
-				'permission_callback' => array( __CLASS__, 'verify_rest_signature' ),
+				'callback'            => array( __CLASS__, 'rest_inventory' ),
+				'permission_callback' => '__return_true',
 			)
 		);
 
 		register_rest_route(
 			'wpma/v1',
-			'/backup-download/(?P<token>[A-Za-z0-9_-]{32,80})',
+			'/quick-login',
 			array(
-				'methods'             => 'GET',
-				'callback'            => array( __CLASS__, 'rest_download_backup' ),
-				'permission_callback' => array( __CLASS__, 'verify_backup_download_signature' ),
+				'methods'             => 'POST',
+				'callback'            => array( __CLASS__, 'rest_quick_login' ),
+				'permission_callback' => '__return_true',
 			)
 		);
+
 	}
 
 	public static function rest_status() {
@@ -111,231 +140,188 @@ class WPMA_Plugin {
 			array(
 				'success'        => true,
 				'agent'          => 'wp-site-monitor-agent',
-				'agent_version'  => WPMA_VERSION,
-				'site_url'       => home_url( '/' ),
-				'wp_version'     => get_bloginfo( 'version' ),
-				'php_version'    => PHP_VERSION,
-				'secret_configured' => self::settings()['secret'] !== '',
 			)
 		);
 	}
 
-	public static function verify_rest_signature( $request ) {
+	public static function rest_create_sso_ticket( WP_REST_Request $request ) {
+		if ( ! self::sso_transport_allowed() ) {
+			return new WP_Error( 'wpma_sso_https_required', 'Đăng nhập nhanh yêu cầu website con sử dụng HTTPS.', array( 'status' => 403 ) );
+		}
+
+		$verified = self::verify_manager_signature( $request );
+		if ( is_wp_error( $verified ) ) {
+			return $verified;
+		}
+		$rate_key = 'wpma_sso_issue_rate_' . md5( self::request_ip() );
+		$issued   = (int) get_transient( $rate_key );
+		if ( $issued >= 20 ) {
+			return new WP_Error( 'wpma_sso_issue_rate_limit', 'Có quá nhiều ticket đăng nhập được yêu cầu. Vui lòng thử lại sau.', array( 'status' => 429 ) );
+		}
+		set_transient( $rate_key, $issued + 1, 5 * MINUTE_IN_SECONDS );
+		$username = sanitize_user( (string) $request->get_param( 'username' ) );
+		if ( '' === $username ) {
+			return new WP_Error( 'wpma_sso_missing_username', 'Thiếu tài khoản quản trị.', array( 'status' => 400 ) );
+		}
+		$user = get_user_by( 'login', $username );
+		if ( ! $user && is_email( $username ) ) {
+			$user = get_user_by( 'email', $username );
+		}
 		$settings = self::settings();
-		if ( empty( $settings['secret'] ) ) {
-			return new WP_Error( 'wpma_missing_secret', 'Agent secret is not configured.', array( 'status' => 403 ) );
+		if ( empty( $settings['enable_sso'] ) || ! $user || (int) $user->ID !== (int) $settings['sso_user_id'] || ! user_can( $user, 'manage_options' ) ) {
+			return new WP_Error( 'wpma_sso_forbidden', 'Tài khoản không có quyền quản trị website.', array( 'status' => 403 ) );
 		}
 
-		$time = (int) $request->get_header( 'x-wpsmm-time' );
-		$signature = (string) $request->get_header( 'x-wpsmm-signature' );
-		$body = (string) $request->get_body();
-		if ( ! $time || ! $signature || abs( time() - $time ) > 300 ) {
-			return new WP_Error( 'wpma_bad_signature', 'Invalid or expired scan signature.', array( 'status' => 403 ) );
-		}
-
-		$expected = hash_hmac( 'sha256', $time . '.' . $body, $settings['secret'] );
-		if ( ! hash_equals( $expected, $signature ) ) {
-			return new WP_Error( 'wpma_bad_signature', 'Invalid scan signature.', array( 'status' => 403 ) );
-		}
-
-		return true;
-	}
-
-	public static function rest_malware_scan( $request ) {
-		$params = json_decode( (string) $request->get_body(), true );
-		$params = is_array( $params ) ? $params : array();
-		$result = self::scan_malware_path(
-			ABSPATH,
-			max( 500, absint( $params['max_files'] ?? 7000 ) ),
-			max( 50, absint( $params['max_findings'] ?? 500 ) )
-		);
+		$ticket = bin2hex( random_bytes( 32 ) );
+		set_transient( 'wpma_sso_' . hash( 'sha256', $ticket ), array( 'user_id' => (int) $user->ID ), MINUTE_IN_SECONDS );
 
 		return rest_ensure_response(
 			array(
-				'success'          => empty( $result['error'] ),
-				'site_url'         => home_url( '/' ),
-				'scanned_files'    => (int) $result['scanned'],
-				'suspicious_count' => count( $result['findings'] ),
-				'findings'         => $result['findings'],
-				'message'          => empty( $result['error'] ) ? 'Remote scan complete.' : $result['error'],
+				'success'   => true,
+				'login_url' => rest_url( 'wpma/v1/quick-login' ),
+				'ticket'    => $ticket,
 			)
 		);
 	}
 
-	public static function rest_create_backup() {
-		$result = self::create_source_backup();
-		if ( is_wp_error( $result ) ) {
-			return $result;
+	public static function rest_inventory( WP_REST_Request $request ) {
+		if ( ! self::sso_transport_allowed() ) {
+			return new WP_Error( 'wpma_inventory_https_required', 'Inventory yêu cầu website con sử dụng HTTPS.', array( 'status' => 403 ) );
 		}
 
-		$token = wp_generate_password( 48, false, false );
-		set_transient(
-			'wpma_backup_' . $token,
-			array(
-				'path' => $result['path'],
-				'name' => $result['name'],
-				'size' => $result['size'],
-			),
-			10 * MINUTE_IN_SECONDS
-		);
+		$verified = self::verify_manager_signature( $request );
+		if ( is_wp_error( $verified ) ) {
+			return $verified;
+		}
 
-		return rest_ensure_response(
-			array(
-				'success'      => true,
-				'site_url'     => home_url( '/' ),
-				'token'        => $token,
-				'file_name'    => $result['name'],
-				'file_size'    => $result['size'],
-				'download_url' => rest_url( 'wpma/v1/backup-download/' . $token ),
-			)
-		);
+		$refresh   = (bool) $request->get_param( 'refresh' ) && ! get_transient( 'wpma_inventory_refresh_lock' );
+		$inventory = $refresh ? false : get_transient( self::INVENTORY_CACHE );
+		if ( ! is_array( $inventory ) ) {
+			$inventory = self::collect_inventory();
+			set_transient( self::INVENTORY_CACHE, $inventory, self::INVENTORY_INTERVAL );
+			set_transient( 'wpma_inventory_refresh_lock', 1, 5 * MINUTE_IN_SECONDS );
+		}
+
+		return rest_ensure_response( array( 'success' => true, 'inventory' => $inventory ) );
 	}
 
-	public static function verify_backup_download_signature( $request ) {
-		$settings = self::settings();
-		$token = (string) $request['token'];
-		$time = (int) $request->get_header( 'x-wpsmm-time' );
-		$signature = (string) $request->get_header( 'x-wpsmm-signature' );
-		if ( empty( $settings['secret'] ) || ! $time || ! $signature || abs( time() - $time ) > 300 ) {
-			return new WP_Error( 'wpma_bad_signature', 'Invalid or expired backup download signature.', array( 'status' => 403 ) );
+	public static function rest_quick_login( WP_REST_Request $request ) {
+		$ticket = sanitize_text_field( (string) $request->get_param( 'ticket' ) );
+		if ( ! preg_match( '/^[a-f0-9]{64}$/', $ticket ) ) {
+			wp_die( 'Ticket đăng nhập không hợp lệ.', '', array( 'response' => 403 ) );
 		}
 
-		$expected = hash_hmac( 'sha256', $time . '.' . $token, $settings['secret'] );
-		return hash_equals( $expected, $signature )
-			? true
-			: new WP_Error( 'wpma_bad_signature', 'Invalid backup download signature.', array( 'status' => 403 ) );
-	}
-
-	public static function rest_download_backup( $request ) {
-		$token = (string) $request['token'];
-		$data = get_transient( 'wpma_backup_' . $token );
-		$path = is_array( $data ) ? (string) ( $data['path'] ?? '' ) : '';
-		if ( ! self::backup_path_allowed( $path ) || ! is_readable( $path ) ) {
-			return new WP_Error( 'wpma_backup_missing', 'Backup file is missing or expired.', array( 'status' => 404 ) );
+		$key  = 'wpma_sso_' . hash( 'sha256', $ticket );
+		$data = get_transient( $key );
+		delete_transient( $key );
+		$user = is_array( $data ) && ! empty( $data['user_id'] ) ? get_user_by( 'id', (int) $data['user_id'] ) : false;
+		if ( ! $user || ! user_can( $user, 'manage_options' ) ) {
+			wp_die( 'Ticket đăng nhập đã hết hạn hoặc đã được sử dụng.', '', array( 'response' => 403 ) );
 		}
 
-		while ( ob_get_level() ) {
-			ob_end_clean();
-		}
-		ignore_user_abort( true );
-		nocache_headers();
-		header( 'Content-Type: application/zip' );
-		header( 'Content-Disposition: attachment; filename="' . basename( $path ) . '"' );
-		header( 'Content-Length: ' . filesize( $path ) );
-		header( 'X-Content-Type-Options: nosniff' );
-		$bytes = readfile( $path );
-		if ( false !== $bytes && $bytes > 0 ) {
-			delete_transient( 'wpma_backup_' . $token );
-			@unlink( $path );
-		}
+		wp_set_current_user( $user->ID );
+		wp_set_auth_cookie( $user->ID, true, is_ssl() );
+		do_action( 'wp_login', $user->user_login, $user );
+		wp_safe_redirect( admin_url() );
 		exit;
 	}
 
-	private static function create_source_backup() {
-		if ( ! class_exists( 'ZipArchive' ) ) {
-			return new WP_Error( 'wpma_zip_missing', 'ZipArchive is not available on the child site.', array( 'status' => 500 ) );
-		}
+	private static function sso_transport_allowed() {
+		return 'https' === wp_parse_url( home_url(), PHP_URL_SCHEME ) || ( defined( 'WPMA_ALLOW_INSECURE_SSO' ) && WPMA_ALLOW_INSECURE_SSO );
+	}
 
-		$dir = self::prepare_backup_dir();
-		if ( ! is_dir( $dir ) || ! is_writable( $dir ) ) {
-			return new WP_Error( 'wpma_backup_dir', 'Child backup directory is not writable.', array( 'status' => 500 ) );
-		}
+	private static function request_ip() {
+		return isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : 'unknown';
+	}
 
-		$name = 'wpma-source-' . gmdate( 'Ymd-His' ) . '-' . wp_generate_password( 16, false, false ) . '.zip';
-		$path = $dir . $name;
-		$zip = new ZipArchive();
-		if ( true !== $zip->open( $path, ZipArchive::CREATE | ZipArchive::OVERWRITE ) ) {
-			return new WP_Error( 'wpma_zip_create', 'Cannot create the child backup ZIP.', array( 'status' => 500 ) );
+	private static function verify_manager_signature( WP_REST_Request $request ) {
+		$rate_key = 'wpma_signature_rate_' . md5( self::request_ip() );
+		$attempts = (int) get_transient( $rate_key );
+		if ( $attempts >= 10 ) {
+			return new WP_Error( 'wpma_signature_rate_limit', 'Có quá nhiều yêu cầu không hợp lệ. Vui lòng thử lại sau.', array( 'status' => 429 ) );
 		}
+		if ( strlen( $request->get_body() ) > 4096 ) {
+			return new WP_Error( 'wpma_request_too_large', 'Dữ liệu yêu cầu vượt quá giới hạn.', array( 'status' => 413 ) );
+		}
+		$timestamp = (string) $request->get_header( 'x-wpma-timestamp' );
+		$nonce     = strtolower( (string) $request->get_header( 'x-wpma-nonce' ) );
+		$signature = strtolower( (string) $request->get_header( 'x-wpma-signature' ) );
+		if ( ! ctype_digit( $timestamp ) || abs( time() - (int) $timestamp ) > 120 || ! preg_match( '/^[a-f0-9]{32}$/', $nonce ) || ! preg_match( '/^[a-f0-9]{64}$/', $signature ) ) {
+			set_transient( $rate_key, $attempts + 1, 5 * MINUTE_IN_SECONDS );
+			return new WP_Error( 'wpma_signature_invalid', 'Chữ ký yêu cầu không hợp lệ.', array( 'status' => 403 ) );
+		}
+		$nonce_key = 'wpma_nonce_' . hash( 'sha256', $nonce );
+		if ( get_transient( $nonce_key ) ) {
+			set_transient( $rate_key, $attempts + 1, 5 * MINUTE_IN_SECONDS );
+			return new WP_Error( 'wpma_signature_replay', 'Yêu cầu đã được sử dụng.', array( 'status' => 403 ) );
+		}
+		$settings  = self::settings();
+		$canonical = $timestamp . "\n" . $nonce . "\n" . $request->get_route() . "\n" . hash( 'sha256', $request->get_body() );
+		$expected  = hash_hmac( 'sha256', $canonical, (string) $settings['agent_secret'] );
+		if ( ! hash_equals( $expected, $signature ) ) {
+			set_transient( $rate_key, $attempts + 1, 5 * MINUTE_IN_SECONDS );
+			return new WP_Error( 'wpma_signature_invalid', 'Chữ ký yêu cầu không hợp lệ.', array( 'status' => 403 ) );
+		}
+		set_transient( $nonce_key, 1, 5 * MINUTE_IN_SECONDS );
+		delete_transient( $rate_key );
+		return true;
+	}
 
-		$root = ABSPATH;
-		$exclude = array( 'wp-content/uploads/wpsma-backups' );
-		$added_files = 0;
-		$added_dirs = 0;
-		$failed = array();
-		try {
-			$files = new RecursiveIteratorIterator(
-				new RecursiveDirectoryIterator( $root, FilesystemIterator::SKIP_DOTS ),
-				RecursiveIteratorIterator::SELF_FIRST
+	private static function ensure_agent_secret() {
+		$settings = get_option( self::OPTION, array() );
+		$settings = is_array( $settings ) ? $settings : array();
+		if ( empty( $settings['agent_secret'] ) || ! preg_match( '/^[a-f0-9]{64}$/', (string) $settings['agent_secret'] ) ) {
+			$settings['agent_secret'] = bin2hex( random_bytes( 32 ) );
+			update_option( self::OPTION, $settings, false );
+		}
+	}
+
+	private static function collect_inventory() {
+		global $wpdb;
+		require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		require_once ABSPATH . 'wp-admin/includes/update.php';
+
+		wp_update_plugins();
+		wp_update_themes();
+		$plugin_updates = get_site_transient( 'update_plugins' );
+		$theme_updates  = get_site_transient( 'update_themes' );
+		$active_plugins = (array) get_option( 'active_plugins', array() );
+		$network_active = is_multisite() ? array_keys( (array) get_site_option( 'active_sitewide_plugins', array() ) ) : array();
+		$plugins        = array();
+		foreach ( get_plugins() as $file => $plugin ) {
+			$update    = isset( $plugin_updates->response[ $file ] ) ? $plugin_updates->response[ $file ] : null;
+			$plugins[] = array(
+				'file'             => $file,
+				'name'             => isset( $plugin['Name'] ) ? $plugin['Name'] : $file,
+				'version'          => isset( $plugin['Version'] ) ? $plugin['Version'] : '',
+				'active'           => in_array( $file, $active_plugins, true ) || in_array( $file, $network_active, true ),
+				'update_available' => ! empty( $update ),
+				'new_version'      => $update && isset( $update->new_version ) ? $update->new_version : '',
 			);
-			foreach ( $files as $file ) {
-				$relative = ltrim( str_replace( $root, '', $file->getPathname() ), '/\\' );
-				$normalized = str_replace( '\\', '/', $relative );
-				foreach ( $exclude as $excluded ) {
-					if ( $normalized === $excluded || 0 === strpos( $normalized, trailingslashit( $excluded ) ) ) {
-						continue 2;
-					}
-				}
-				if ( $file->isDir() ) {
-					if ( ! $zip->addEmptyDir( $relative ) ) {
-						$failed[] = $normalized;
-					}
-					$added_dirs++;
-				} elseif ( $file->isFile() ) {
-					if ( ! is_readable( $file->getPathname() ) || ! $zip->addFile( $file->getPathname(), $relative ) ) {
-						$failed[] = $normalized;
-					}
-					$added_files++;
-				}
-			}
-		} catch ( Throwable $e ) {
-			$zip->close();
-			@unlink( $path );
-			return new WP_Error( 'wpma_zip_read', 'Cannot read the complete child site filesystem: ' . $e->getMessage(), array( 'status' => 500 ) );
 		}
-		$zip->addFromString(
-			'wpma-backup-info.json',
-			wp_json_encode(
-				array(
-					'created_at'  => current_time( 'mysql' ),
-					'site'        => home_url( '/' ),
-					'added_files' => $added_files,
-					'added_dirs'  => $added_dirs,
-					'failed'      => $failed,
-				),
-				JSON_PRETTY_PRINT
-			)
+
+		$themes = array();
+		foreach ( wp_get_themes() as $stylesheet => $theme ) {
+			$update   = isset( $theme_updates->response[ $stylesheet ] ) ? $theme_updates->response[ $stylesheet ] : null;
+			$themes[] = array(
+				'stylesheet'       => $stylesheet,
+				'name'             => $theme->get( 'Name' ),
+				'version'          => $theme->get( 'Version' ),
+				'active'           => get_stylesheet() === $stylesheet,
+				'update_available' => ! empty( $update ),
+				'new_version'      => $update && isset( $update['new_version'] ) ? $update['new_version'] : '',
+			);
+		}
+
+		return array(
+			'generated_at' => current_time( 'mysql' ),
+			'wordpress'    => get_bloginfo( 'version' ),
+			'php'          => PHP_VERSION,
+			'database'     => $wpdb->db_version(),
+			'server'       => isset( $_SERVER['SERVER_SOFTWARE'] ) ? sanitize_text_field( wp_unslash( $_SERVER['SERVER_SOFTWARE'] ) ) : '',
+			'plugins'      => $plugins,
+			'themes'       => $themes,
 		);
-		if ( ! $zip->close() || ! is_file( $path ) ) {
-			@unlink( $path );
-			return new WP_Error( 'wpma_zip_close', 'Cannot finalize the child backup ZIP.', array( 'status' => 500 ) );
-		}
-		if ( ! empty( $failed ) ) {
-			@unlink( $path );
-			return new WP_Error( 'wpma_zip_incomplete', 'Backup stopped because some source files could not be added: ' . implode( ', ', array_slice( $failed, 0, 5 ) ), array( 'status' => 500 ) );
-		}
-
-		return array( 'path' => $path, 'name' => $name, 'size' => filesize( $path ) );
-	}
-
-	private static function prepare_backup_dir() {
-		$upload = wp_upload_dir();
-		$dir = trailingslashit( $upload['basedir'] ) . 'wpsma-backups/';
-		wp_mkdir_p( $dir );
-		if ( is_dir( $dir ) ) {
-			if ( ! file_exists( $dir . '.htaccess' ) ) {
-				file_put_contents( $dir . '.htaccess', "Require all denied\nDeny from all\n" );
-			}
-			if ( ! file_exists( $dir . 'web.config' ) ) {
-				file_put_contents( $dir . 'web.config', "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<configuration><system.webServer><authorization><deny users=\"*\" /></authorization></system.webServer></configuration>\n" );
-			}
-			if ( ! file_exists( $dir . 'index.php' ) ) {
-				file_put_contents( $dir . 'index.php', "<?php\n// Silence is golden.\n" );
-			}
-			foreach ( glob( $dir . '*.zip' ) ?: array() as $file ) {
-				if ( is_file( $file ) && filemtime( $file ) < time() - HOUR_IN_SECONDS ) {
-					@unlink( $file );
-				}
-			}
-		}
-		return $dir;
-	}
-
-	private static function backup_path_allowed( $path ) {
-		$upload = wp_upload_dir();
-		$base = realpath( trailingslashit( $upload['basedir'] ) . 'wpsma-backups/' );
-		$real = realpath( $path );
-		return $base && $real && 0 === strpos( $real, trailingslashit( $base ) );
 	}
 
 	public static function is_hidden() {
@@ -345,20 +331,161 @@ class WPMA_Plugin {
 		return ! empty( self::settings()['hide_agent'] );
 	}
 
+	private static function sanitize_authorized_users( $users ) {
+		if ( ! is_array( $users ) ) {
+			return array();
+		}
+
+		$allowed_permissions = array( 'access_agent', 'view_logs', 'manage_settings', 'manage_plugins', 'install_plugins', 'manage_themes', 'edit_files' );
+		$authorized_users    = array();
+		foreach ( $users as $user_id => $permissions ) {
+			$user_id = absint( $user_id );
+			if ( ! $user_id || ! get_user_by( 'id', $user_id ) || ! is_array( $permissions ) ) {
+				continue;
+			}
+			$authorized_users[ $user_id ] = array();
+			$has_permission                = false;
+			foreach ( $allowed_permissions as $permission ) {
+				$authorized_users[ $user_id ][ $permission ] = ! empty( $permissions[ $permission ] ) ? 1 : 0;
+				$has_permission = $has_permission || ! empty( $authorized_users[ $user_id ][ $permission ] );
+			}
+			if ( ! $has_permission ) {
+				unset( $authorized_users[ $user_id ] );
+			}
+		}
+		return $authorized_users;
+	}
+
+	private static function current_user_permission( $permission ) {
+		$settings         = self::settings();
+		$authorized_users = $settings['authorized_users'];
+		$user_id          = get_current_user_id();
+		if ( empty( $authorized_users ) ) {
+			return current_user_can( 'manage_options' );
+		}
+		return ! empty( $authorized_users[ $user_id ]['access_agent'] ) && ! empty( $authorized_users[ $user_id ][ $permission ] );
+	}
+
+	private static function current_user_can_access_agent() {
+		$settings         = self::settings();
+		$authorized_users = $settings['authorized_users'];
+		if ( empty( $authorized_users ) ) {
+			return current_user_can( 'manage_options' );
+		}
+		return ! empty( $authorized_users[ get_current_user_id() ]['access_agent'] );
+	}
+
+	private static function current_user_can_manage_settings() {
+		return self::current_user_permission( 'manage_settings' );
+	}
+
+	private static function current_user_can_view_logs() {
+		return self::current_user_permission( 'view_logs' );
+	}
+
+	public static function grant_delegated_capabilities( $allcaps, $caps, $args, $user ) {
+		$settings         = self::settings();
+		$authorized_users = $settings['authorized_users'];
+		$user_id          = isset( $user->ID ) ? absint( $user->ID ) : 0;
+		if ( ! $user_id || empty( $authorized_users[ $user_id ] ) ) {
+			return $allcaps;
+		}
+
+		$permissions = $authorized_users[ $user_id ];
+		if ( ! empty( $permissions['manage_plugins'] ) ) {
+			foreach ( array( 'activate_plugins', 'update_plugins', 'delete_plugins' ) as $capability ) {
+				$allcaps[ $capability ] = true;
+			}
+		}
+		if ( ! empty( $permissions['install_plugins'] ) ) {
+			$allcaps['install_plugins'] = true;
+			$allcaps['upload_plugins']  = true;
+		}
+		if ( ! empty( $permissions['manage_themes'] ) ) {
+			foreach ( array( 'switch_themes', 'edit_theme_options', 'update_themes', 'delete_themes' ) as $capability ) {
+				$allcaps[ $capability ] = true;
+			}
+		}
+		if ( ! empty( $permissions['edit_files'] ) ) {
+			$allcaps['edit_plugins'] = true;
+			$allcaps['edit_themes']  = true;
+		}
+		return $allcaps;
+	}
+
+	public static function allow_delegated_protected_capability( $allowed, $capability, $user_id ) {
+		if ( $allowed ) {
+			return true;
+		}
+
+		$settings         = self::settings();
+		$authorized_users = $settings['authorized_users'];
+		$permissions      = isset( $authorized_users[ absint( $user_id ) ] ) ? $authorized_users[ absint( $user_id ) ] : array();
+		$capability_map   = array(
+			'activate_plugins' => 'manage_plugins',
+			'update_plugins'   => 'manage_plugins',
+			'delete_plugins'   => 'manage_plugins',
+			'install_plugins'  => 'install_plugins',
+			'upload_plugins'   => 'install_plugins',
+			'switch_themes'    => 'manage_themes',
+			'edit_theme_options' => 'manage_themes',
+			'update_themes'    => 'manage_themes',
+			'delete_themes'    => 'manage_themes',
+			'edit_plugins'     => 'edit_files',
+			'edit_themes'      => 'edit_files',
+			'edit_files'       => 'edit_files',
+		);
+
+		return isset( $capability_map[ $capability ] ) && ! empty( $permissions[ $capability_map[ $capability ] ] );
+	}
+
+	private static function is_protected_sso_user( $user_id ) {
+		$settings = self::settings();
+		return ! empty( $settings['enable_sso'] ) && ! empty( $settings['sso_user_id'] ) && (int) $settings['sso_user_id'] === absint( $user_id );
+	}
+
+	public static function protect_sso_user_from_deletion( $caps, $capability, $user_id, $args ) {
+		if ( in_array( $capability, array( 'delete_user', 'delete_users' ), true ) && ! empty( $args[0] ) && self::is_protected_sso_user( $args[0] ) ) {
+			return array( 'do_not_allow' );
+		}
+		return $caps;
+	}
+
+	public static function prevent_sso_user_deletion( $user_id ) {
+		if ( self::is_protected_sso_user( $user_id ) ) {
+			wp_die( esc_html__( 'Không thể xóa tài khoản đang được chọn cho Quick login SSO. Hãy tắt SSO hoặc chọn tài khoản khác trước.', 'wp-site-monitor-agent' ), '', array( 'response' => 403 ) );
+		}
+	}
+
+	public static function hide_sso_user_delete_action( $actions, $user ) {
+		if ( isset( $user->ID ) && self::is_protected_sso_user( $user->ID ) ) {
+			unset( $actions['delete'] );
+		}
+		return $actions;
+	}
+
 	public static function admin_menu() {
-		if ( self::is_hidden() ) {
+		if ( self::is_hidden() || ! self::current_user_can_access_agent() ) {
 			return;
 		}
 
 		add_menu_page(
 			__( 'WP Site Monitor Agent', 'wp-site-monitor-agent' ),
 			__( 'WP Site Monitor Agent', 'wp-site-monitor-agent' ),
-			'manage_options',
+			'read',
 			'wp-site-monitor-agent',
 			array( __CLASS__, 'render_settings_page' ),
 			'dashicons-shield-alt',
 			59
 		);
+	}
+
+	public static function enqueue_admin_assets( $hook ) {
+		if ( 'toplevel_page_wp-site-monitor-agent' !== $hook ) {
+			return;
+		}
+
+		wp_enqueue_style( 'wpma-admin', plugins_url( 'assets/css/admin.css', WPMA_PLUGIN_FILE ), array(), WPMA_VERSION );
 	}
 
 	public static function hide_from_plugins_list( $plugins ) {
@@ -369,19 +496,55 @@ class WPMA_Plugin {
 	}
 
 	public static function handle_settings_save() {
-		if ( ! current_user_can( 'manage_options' ) || empty( $_POST['wpma_save_settings'] ) ) {
+		if ( empty( $_POST['wpma_save_settings'] ) ) {
 			return;
 		}
 
+		if ( ! self::current_user_can_manage_settings() ) {
+			wp_die( esc_html__( 'Bạn không có quyền chỉnh sửa cài đặt WP Site Monitor Agent.', 'wp-site-monitor-agent' ), '', array( 'response' => 403 ) );
+		}
+
 		check_admin_referer( 'wpma_save_settings', 'wpma_nonce' );
-		$current = self::settings();
-		$new_secret = isset( $_POST['secret'] ) ? sanitize_text_field( wp_unslash( $_POST['secret'] ) ) : '';
+		$current  = self::settings();
 		$settings = array(
-			'secret'          => '' !== $new_secret ? $new_secret : $current['secret'],
 			'hide_agent'      => ! empty( $_POST['hide_agent'] ) ? 1 : 0,
 			'access_log_path' => isset( $_POST['access_log_path'] ) ? self::sanitize_log_path( wp_unslash( $_POST['access_log_path'] ) ) : '',
 			'log_lines'       => isset( $_POST['log_lines'] ) ? min( 1000, max( 20, absint( $_POST['log_lines'] ) ) ) : 200,
+			'agent_secret'    => ! empty( $current['agent_secret'] ) ? (string) $current['agent_secret'] : bin2hex( random_bytes( 32 ) ),
+			'enable_sso'      => ! empty( $_POST['enable_sso'] ) ? 1 : 0,
+			'sso_user_id'     => isset( $_POST['sso_user_id'] ) ? absint( $_POST['sso_user_id'] ) : 0,
+			'authorized_users' => $current['authorized_users'],
 		);
+		if ( ! empty( $settings['enable_sso'] ) ) {
+			$sso_user = $settings['sso_user_id'] ? get_user_by( 'id', $settings['sso_user_id'] ) : false;
+			if ( ! $sso_user || ! user_can( $sso_user, 'manage_options' ) ) {
+				add_settings_error( 'wpma_messages', 'wpma_sso_admin_required', __( 'Quick login SSO yêu cầu chọn một tài khoản quản trị viên hợp lệ.', 'wp-site-monitor-agent' ), 'error' );
+				return;
+			}
+		}
+		if ( current_user_can( 'manage_options' ) ) {
+			$authorized_users = isset( $_POST['authorized_users'] ) ? self::sanitize_authorized_users( wp_unslash( $_POST['authorized_users'] ) ) : array();
+			if ( empty( $authorized_users ) ) {
+				add_settings_error( 'wpma_messages', 'wpma_access_required', __( 'Phải chỉ định ít nhất một tài khoản được phép truy cập Agent.', 'wp-site-monitor-agent' ), 'error' );
+				return;
+			}
+			$has_admin_manager = false;
+			foreach ( $authorized_users as $user_id => $permissions ) {
+				$user = get_user_by( 'id', $user_id );
+				if ( $user && user_can( $user, 'manage_options' ) && ! empty( $permissions['access_agent'] ) && ! empty( $permissions['manage_settings'] ) ) {
+					$has_admin_manager = true;
+					break;
+				}
+			}
+			if ( ! $has_admin_manager ) {
+				add_settings_error( 'wpma_messages', 'wpma_admin_manager_required', __( 'Phải giữ lại ít nhất một quản trị viên có quyền sửa cài đặt Agent để tránh mất quyền truy cập cấu hình.', 'wp-site-monitor-agent' ), 'error' );
+				return;
+			}
+			$settings['authorized_users'] = $authorized_users;
+		}
+		if ( ! empty( $_POST['regenerate_agent_secret'] ) ) {
+			$settings['agent_secret'] = bin2hex( random_bytes( 32 ) );
+		}
 
 		update_option( self::OPTION, $settings, false );
 		if ( class_exists( 'WPMA_GitHub_Updater' ) ) {
@@ -391,29 +554,48 @@ class WPMA_Plugin {
 	}
 
 	public static function render_settings_page() {
+		if ( ! self::current_user_can_access_agent() ) {
+			wp_die( esc_html__( 'Bạn không có quyền truy cập WP Site Monitor Agent.', 'wp-site-monitor-agent' ), '', array( 'response' => 403 ) );
+		}
+
 		$settings = self::settings();
+		$can_manage_settings = self::current_user_can_manage_settings();
 		?>
-		<div class="wrap">
-			<h1><?php esc_html_e( 'WP Site Monitor Agent', 'wp-site-monitor-agent' ); ?></h1>
-			<p><?php esc_html_e( 'This child agent serves WP Site Monitor Manager. It exposes signed endpoints for remote source backups, malware scanning, and health checks.', 'wp-site-monitor-agent' ); ?></p>
+		<div class="wrap wpma-wrap">
+			<header class="wpma-page-header">
+				<div class="wpma-page-icon"><span class="dashicons dashicons-shield-alt"></span></div>
+				<div><h1><?php esc_html_e( 'WP Site Monitor Agent', 'wp-site-monitor-agent' ); ?></h1>
+				<p><?php esc_html_e( 'Kết nối website này với WP Site Monitor Manager, cấu hình đăng nhập nhanh và kiểm tra access log.', 'wp-site-monitor-agent' ); ?></p></div>
+			</header>
 			<?php settings_errors( 'wpma_messages' ); ?>
-			<form method="post" action="">
+			<?php if ( $can_manage_settings ) : ?>
+			<form method="post" action="" class="wpma-settings-form">
 				<?php wp_nonce_field( 'wpma_save_settings', 'wpma_nonce' ); ?>
-				<table class="form-table" role="presentation">
-					<tr>
-						<th><label for="secret"><?php esc_html_e( 'Agent secret', 'wp-site-monitor-agent' ); ?></label></th>
-						<td>
-							<input name="secret" id="secret" type="password" class="regular-text" value="" autocomplete="new-password" placeholder="<?php esc_attr_e( 'Leave blank to keep current secret', 'wp-site-monitor-agent' ); ?>">
-							<?php if ( ! empty( $settings['secret'] ) ) : ?>
-								<p class="description"><?php esc_html_e( 'A secret is saved. Use the same value as Backup Secret for this site in WP Site Monitor Manager.', 'wp-site-monitor-agent' ); ?></p>
-							<?php endif; ?>
-						</td>
-					</tr>
+				<div class="wpma-card">
+					<div class="wpma-card-heading"><h2><?php esc_html_e( 'Cấu hình Agent', 'wp-site-monitor-agent' ); ?></h2><p><?php esc_html_e( 'Thiết lập kết nối với Manager và nguồn dữ liệu nhật ký máy chủ.', 'wp-site-monitor-agent' ); ?></p></div>
+				<table class="form-table wpma-form-table" role="presentation">
 					<tr>
 						<th><?php esc_html_e( 'Agent endpoint', 'wp-site-monitor-agent' ); ?></th>
 						<td>
-							<code><?php echo esc_html( rest_url( 'wpma/v1/malware-scan' ) ); ?></code>
-							<p class="description"><?php esc_html_e( 'The manager calls this endpoint with an HMAC signature. It is not intended for manual use.', 'wp-site-monitor-agent' ); ?></p>
+							<code><?php echo esc_html( rest_url( 'wpma/v1/status' ) ); ?></code>
+							<p class="description"><?php esc_html_e( 'Health status endpoint for WP Site Monitor Manager.', 'wp-site-monitor-agent' ); ?></p>
+						</td>
+					</tr>
+					<tr>
+						<th><label for="agent_secret"><?php esc_html_e( 'Manager connection key', 'wp-site-monitor-agent' ); ?></label></th>
+						<td>
+							<input id="agent_secret" type="text" class="large-text code" value="<?php echo esc_attr( $settings['agent_secret'] ); ?>" readonly>
+							<p class="description"><?php esc_html_e( 'Copy this key into the website configuration in WP Site Monitor Manager. Rotate it if you suspect exposure.', 'wp-site-monitor-agent' ); ?></p>
+							<label><input type="checkbox" name="regenerate_agent_secret" value="1"> <?php esc_html_e( 'Generate a new key when saving settings', 'wp-site-monitor-agent' ); ?></label>
+						</td>
+					</tr>
+					<tr>
+						<th><?php esc_html_e( 'Quick login SSO', 'wp-site-monitor-agent' ); ?></th>
+						<td>
+							<label><input type="checkbox" name="enable_sso" value="1" <?php checked( $settings['enable_sso'] ); ?>> <?php esc_html_e( 'Allow signed one-click login requests from the manager', 'wp-site-monitor-agent' ); ?></label>
+							<p><select name="sso_user_id"><option value="0"><?php esc_html_e( 'Select an administrator', 'wp-site-monitor-agent' ); ?></option><?php foreach ( get_users( array( 'role' => 'administrator' ) ) as $admin_user ) : ?><option value="<?php echo esc_attr( $admin_user->ID ); ?>" <?php selected( $settings['sso_user_id'], $admin_user->ID ); ?>><?php echo esc_html( $admin_user->user_login ); ?></option><?php endforeach; ?></select></p>
+							<p class="description"><?php esc_html_e( 'Only the selected administrator can receive a one-click login ticket.', 'wp-site-monitor-agent' ); ?></p>
+							<p class="description"><?php esc_html_e( 'Khi SSO đang bật, tài khoản được chọn không thể bị xóa. Hãy chọn tài khoản khác hoặc tắt SSO trước khi xóa.', 'wp-site-monitor-agent' ); ?></p>
 						</td>
 					</tr>
 					<tr>
@@ -435,10 +617,40 @@ class WPMA_Plugin {
 							<input name="log_lines" id="log_lines" type="number" min="20" max="1000" step="20" value="<?php echo esc_attr( $settings['log_lines'] ); ?>">
 						</td>
 					</tr>
+					<?php if ( current_user_can( 'manage_options' ) ) : ?>
+					<tr>
+						<th><?php esc_html_e( 'Phân quyền tài khoản', 'wp-site-monitor-agent' ); ?></th>
+						<td>
+							<p class="description"><?php esc_html_e( 'Mỗi quyền hoạt động độc lập. Chỉ bật Truy cập Agent nếu tài khoản cần mở trang này; các quyền quản lý plugin vẫn có thể cấp riêng.', 'wp-site-monitor-agent' ); ?></p>
+							<div class="wpma-table-scroll"><table class="widefat striped wpma-permissions-table">
+								<thead><tr><th><?php esc_html_e( 'Tài khoản', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Truy cập Agent', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Xem file log', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Sửa cài đặt Agent', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Quản lý plugin', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Cài plugin', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Quản lý giao diện', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Sửa file plugin/theme', 'wp-site-monitor-agent' ); ?></th></tr></thead>
+								<tbody>
+								<?php foreach ( get_users( array( 'orderby' => 'display_name' ) ) as $account ) : $permissions = isset( $settings['authorized_users'][ $account->ID ] ) ? $settings['authorized_users'][ $account->ID ] : array(); ?>
+									<tr>
+										<td><strong><?php echo esc_html( $account->display_name ); ?></strong><br><code><?php echo esc_html( $account->user_login ); ?></code></td>
+										<td><input type="checkbox" name="authorized_users[<?php echo esc_attr( $account->ID ); ?>][access_agent]" value="1" <?php checked( ! empty( $permissions['access_agent'] ) ); ?>></td>
+										<td><input type="checkbox" name="authorized_users[<?php echo esc_attr( $account->ID ); ?>][view_logs]" value="1" <?php checked( ! empty( $permissions['view_logs'] ) ); ?>></td>
+										<td><input type="checkbox" name="authorized_users[<?php echo esc_attr( $account->ID ); ?>][manage_settings]" value="1" <?php checked( ! empty( $permissions['manage_settings'] ) ); ?>></td>
+										<td><input type="checkbox" name="authorized_users[<?php echo esc_attr( $account->ID ); ?>][manage_plugins]" value="1" <?php checked( ! empty( $permissions['manage_plugins'] ) ); ?>></td>
+										<td><input type="checkbox" name="authorized_users[<?php echo esc_attr( $account->ID ); ?>][install_plugins]" value="1" <?php checked( ! empty( $permissions['install_plugins'] ) ); ?>></td>
+										<td><input type="checkbox" name="authorized_users[<?php echo esc_attr( $account->ID ); ?>][manage_themes]" value="1" <?php checked( ! empty( $permissions['manage_themes'] ) ); ?>></td>
+										<td><input type="checkbox" name="authorized_users[<?php echo esc_attr( $account->ID ); ?>][edit_files]" value="1" <?php checked( ! empty( $permissions['edit_files'] ) ); ?>></td>
+									</tr>
+								<?php endforeach; ?>
+								</tbody>
+							</table></div>
+							<p class="description"><?php esc_html_e( 'Cảnh báo: quyền sửa file plugin/theme có thể thay đổi mã nguồn đang chạy. Chỉ bật cho tài khoản tin cậy và sử dụng trong thời gian cần thiết.', 'wp-site-monitor-agent' ); ?></p>
+						</td>
+					</tr>
+					<?php endif; ?>
 				</table>
-				<?php submit_button( __( 'Save Agent Settings', 'wp-site-monitor-agent' ), 'primary', 'wpma_save_settings' ); ?>
+				</div>
+				<div class="wpma-savebar"><?php submit_button( __( 'Lưu thay đổi', 'wp-site-monitor-agent' ), 'primary', 'wpma_save_settings', false ); ?></div>
 			</form>
-			<?php self::render_log_viewer( $settings ); ?>
+			<?php else : ?>
+				<div class="notice notice-info inline"><p><?php esc_html_e( 'Tài khoản của bạn chỉ có quyền xem các khu vực được chỉ định. Liên hệ quản trị viên để thay đổi cấu hình Agent.', 'wp-site-monitor-agent' ); ?></p></div>
+			<?php endif; ?>
+			<?php if ( self::current_user_can_view_logs() ) : self::render_log_viewer( $settings ); endif; ?>
 		</div>
 		<?php
 	}
@@ -456,10 +668,10 @@ class WPMA_Plugin {
 		$lines = (int) $settings['log_lines'];
 		$status = self::log_status( $path );
 		?>
-		<hr>
-		<h2><?php esc_html_e( 'Access Log Viewer', 'wp-site-monitor-agent' ); ?></h2>
-		<p><?php esc_html_e( 'Shows the latest lines from the configured access log without opening the hosting control panel.', 'wp-site-monitor-agent' ); ?></p>
-		<form method="get" action="<?php echo esc_url( admin_url( 'admin.php' ) ); ?>" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin:12px 0;">
+		<section class="wpma-card wpma-log-card">
+		<div class="wpma-card-heading"><h2><?php esc_html_e( 'Access Log Viewer', 'wp-site-monitor-agent' ); ?></h2>
+		<p><?php esc_html_e( 'Xem nhanh các dòng access log gần nhất mà không cần mở trang quản trị hosting.', 'wp-site-monitor-agent' ); ?></p></div>
+		<form method="get" action="<?php echo esc_url( admin_url( 'admin.php' ) ); ?>" class="wpma-log-toolbar">
 			<input type="hidden" name="page" value="wp-site-monitor-agent">
 			<label><?php esc_html_e( 'Log date', 'wp-site-monitor-agent' ); ?><br>
 				<input type="date" name="wpma_log_date" value="<?php echo esc_attr( $selected_date ); ?>">
@@ -476,8 +688,9 @@ class WPMA_Plugin {
 				<code><?php echo esc_html( $path ); ?></code>
 				<a class="button button-small" href="<?php echo esc_url( add_query_arg( array( 'page' => 'wp-site-monitor-agent', 'wpma_log_date' => $selected_date, 'wpma_log_refresh' => time() ), admin_url( 'admin.php' ) ) ); ?>"><?php esc_html_e( 'Refresh', 'wp-site-monitor-agent' ); ?></a>
 			</p>
-			<pre style="max-height:520px;overflow:auto;background:#101827;color:#e5eefb;padding:16px;border-radius:8px;white-space:pre-wrap;"><?php echo esc_html( self::read_log_tail( $path, $lines ) ); ?></pre>
+			<pre class="wpma-log-output"><?php echo esc_html( self::read_log_tail( $path, $lines ) ); ?></pre>
 		<?php endif; ?>
+		</section>
 		<?php
 	}
 
@@ -587,99 +800,4 @@ class WPMA_Plugin {
 		return $summary;
 	}
 
-	public static function scan_malware_path( $root, $max_files = 7000, $max_findings = 500 ) {
-		$signatures = self::malware_signatures();
-		$findings = array();
-		$scanned = 0;
-
-		try {
-			$iterator = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $root, FilesystemIterator::SKIP_DOTS ) );
-			foreach ( $iterator as $file ) {
-				if ( $scanned >= $max_files || count( $findings ) >= $max_findings ) {
-					break;
-				}
-				if ( ! $file->isFile() ) {
-					continue;
-				}
-
-				$path = $file->getPathname();
-				$rel = ltrim( str_replace( $root, '', $path ), DIRECTORY_SEPARATOR );
-				$rel = str_replace( '\\', '/', $rel );
-				if ( preg_match( '~(^|/)(cache|wpsmm-backups|wpsma-backups|node_modules|vendor/composer|\.git|\.svn)(/|$)~i', $rel ) ) {
-					continue;
-				}
-				if ( ! preg_match( '~(\.php|\.phtml|\.php[0-9]?|\.js|\.htaccess)$~i', $path ) || $file->getSize() > 2 * 1024 * 1024 ) {
-					continue;
-				}
-
-				$scanned++;
-				$content = @file_get_contents( $path, false, null, 0, 2000000 );
-				if ( false === $content || '' === $content ) {
-					continue;
-				}
-
-				foreach ( $signatures as $name => $rule ) {
-					if ( ! preg_match_all( $rule['regex'], $content, $matches, PREG_OFFSET_CAPTURE ) ) {
-						continue;
-					}
-					$limit = 5;
-					foreach ( $matches[0] as $match ) {
-						if ( $limit <= 0 || count( $findings ) >= $max_findings ) {
-							break 2;
-						}
-						$line = self::malware_line_number( $content, (int) $match[1] );
-						$findings[] = array(
-							'file' => $rel,
-							'line' => $line,
-							'signature' => $name,
-							'risk' => $rule['risk'],
-							'title' => $rule['title'],
-							'description' => $rule['description'],
-							'match' => self::malware_shorten( (string) $match[0], 160 ),
-							'code' => self::malware_shorten( self::malware_line_excerpt( $content, $line ), 260 ),
-						);
-						$limit--;
-					}
-				}
-			}
-		} catch ( Throwable $e ) {
-			return array( 'scanned' => $scanned, 'findings' => $findings, 'error' => $e->getMessage() );
-		}
-
-		return array( 'scanned' => $scanned, 'findings' => $findings );
-	}
-
-	public static function malware_signatures() {
-		$host = preg_quote( parse_url( home_url(), PHP_URL_HOST ) ?: '', '/' );
-		return array(
-			'eval_base64' => array( 'title' => 'Eval + base64 payload', 'description' => 'Common encoded loader/backdoor pattern.', 'risk' => 'critical', 'regex' => '/eval\s*\(\s*base64_decode\s*\(/i' ),
-			'gzinflate_payload' => array( 'title' => 'Gzinflate payload', 'description' => 'Compressed or encoded payload often used to hide malicious code.', 'risk' => 'high', 'regex' => '/gzinflate\s*\(\s*base64_decode\s*\(/i' ),
-			'assert_request' => array( 'title' => 'Assert from request', 'description' => 'Potential execution of GET/POST/REQUEST data.', 'risk' => 'critical', 'regex' => '/assert\s*\(\s*\$_(POST|REQUEST|GET)/i' ),
-			'dangerous_exec_request' => array( 'title' => 'Command execution from request', 'description' => 'Potential system command execution from user input.', 'risk' => 'critical', 'regex' => '/(shell_exec|exec|passthru|system|proc_open|popen)\s*\(\s*\$_(POST|REQUEST|GET)/i' ),
-			'preg_replace_eval' => array( 'title' => 'Preg replace /e', 'description' => 'Legacy code execution pattern that is often abused.', 'risk' => 'high', 'regex' => '/preg_replace\s*\(.{0,160}\/e[\'\"]/is' ),
-			'variable_function_request' => array( 'title' => 'Variable function from request', 'description' => 'Dynamic function call controlled by request data.', 'risk' => 'high', 'regex' => '/\$[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*\$_(GET|POST|REQUEST)\s*\[[^\]]+\].{0,120}\$[a-zA-Z_][a-zA-Z0-9_]*\s*\(/is' ),
-			'file_write_request' => array( 'title' => 'File write from request', 'description' => 'Request data may be written to disk.', 'risk' => 'high', 'regex' => '/(file_put_contents|fwrite)\s*\(.{0,220}\$_(POST|REQUEST|GET)/is' ),
-			'hidden_iframe' => array( 'title' => 'Hidden iframe', 'description' => 'Hidden iframe pattern often seen in injected malware or SEO spam.', 'risk' => 'medium', 'regex' => '/<iframe[^>]+style=[\'\"][^\'\"]*(display\s*:\s*none|visibility\s*:\s*hidden)/i' ),
-			'seo_spam_keywords' => array( 'title' => 'SEO spam keyword', 'description' => 'Casino/pharma/loan/adult spam keyword detected.', 'risk' => 'medium', 'regex' => '/(casino|betting|viagra|loan payday|porn|adult dating)/i' ),
-			'suspicious_htaccess_redirect' => array( 'title' => '.htaccess external redirect', 'description' => 'Rewrite or redirect to an external domain.', 'risk' => 'high', 'regex' => '/RewriteRule\s+\^.*https?:\/\/(?!' . $host . ')/i' ),
-		);
-	}
-
-	private static function malware_line_number( $content, $offset ) {
-		return substr_count( substr( $content, 0, max( 0, $offset ) ), "\n" ) + 1;
-	}
-
-	private static function malware_line_excerpt( $content, $line ) {
-		$lines = preg_split( '/\R/', $content );
-		$index = max( 0, $line - 1 );
-		return isset( $lines[ $index ] ) ? trim( (string) $lines[ $index ] ) : '';
-	}
-
-	private static function malware_shorten( $value, $max ) {
-		$value = preg_replace( '/\s+/', ' ', trim( $value ) );
-		if ( function_exists( 'mb_strlen' ) && mb_strlen( $value ) > $max ) {
-			return mb_substr( $value, 0, $max - 3 ) . '...';
-		}
-		return strlen( $value ) > $max ? substr( $value, 0, $max - 3 ) . '...' : $value;
-	}
 }
