@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Site Monitor Agent
  * Description: Child agent for WP Site Monitor Manager: signed health checks and remote malware scanning.
- * Version: 1.0.0
+ * Version: 1.0.2
  * Author: TNStack
  * Author URI: https://tnstack.com
  * Text Domain: wp-site-monitor-agent
@@ -12,7 +12,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'WPMA_VERSION', '1.0.0' );
+define( 'WPMA_VERSION', '1.0.2' );
 define( 'WPMA_PLUGIN_FILE', __FILE__ );
 define( 'WPMA_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPMA_GITHUB_REPO', 'tnstack25-dev/wp-site-monitor-agent' );
