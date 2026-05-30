@@ -4,7 +4,7 @@ Tags: monitor, health check, access log, agent
 Requires at least: 5.8
 Tested up to: 6.6
 Requires PHP: 7.4
-Stable tag: 2.0.0
+Stable tag: 2.0.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -44,6 +44,9 @@ At least one administrator must retain Access Agent and Edit Agent settings perm
 When Quick login SSO is enabled, the selected administrator account cannot be deleted. Disable SSO or select another administrator before deleting that account.
 
 == Changelog ==
+
+= 2.0.2 =
+Updated release packaging compatibility for WordPress plugin updates.
 
 = 2.0.0 =
 Added production security hardening, signed Manager communication, restricted SSO, account permission management, theme management permissions, protected SSO accounts, and the redesigned Agent admin interface.
