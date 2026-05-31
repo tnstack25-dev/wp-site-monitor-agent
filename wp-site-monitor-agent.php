@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Site Monitor Agent
  * Description: Agent con dành cho WP Site Monitor Manager: trạng thái hoạt động và trình xem nhật ký truy cập.
- * Version: 2.0.2
+ * Version: 2.1.0
  * Author: TNStack
  * Author URI: https://tnstack.com
  * Text Domain: wp-site-monitor-agent
@@ -12,7 +12,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'WPMA_VERSION', '2.0.2' );
+define( 'WPMA_VERSION', '2.1.0' );
 define( 'WPMA_PLUGIN_FILE', __FILE__ );
 define( 'WPMA_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPMA_GITHUB_REPO', 'tnstack25-dev/wp-site-monitor-agent' );
