@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: WP Site Monitor Agent
- * Description: Child agent for WP Site Monitor Manager: health status and access log viewer.
+ * Description: Agent con dành cho WP Site Monitor Manager: trạng thái hoạt động và trình xem nhật ký truy cập.
  * Version: 2.0.2
  * Author: TNStack
  * Author URI: https://tnstack.com

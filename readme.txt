@@ -8,51 +8,51 @@ Stable tag: 2.0.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Child agent for WP Site Monitor Manager.
+Agent con dành cho WP Site Monitor Manager.
 
 == Description ==
 
-WP Site Monitor Agent exposes a health status endpoint for WP Site Monitor Manager.
-It also includes an admin access log viewer for tailing the configured web server access log.
-Updates are managed through GitHub Releases.
+WP Site Monitor Agent cung cấp điểm kết nối trạng thái hoạt động cho WP Site Monitor Manager.
+Plugin cũng có trình xem các dòng gần nhất trong nhật ký truy cập của máy chủ web đã cấu hình.
+Các bản cập nhật được quản lý thông qua GitHub Releases.
 
 == Installation ==
 
-1. Upload the plugin to the child WordPress site.
-2. Activate WP Site Monitor Agent.
-3. Open WP Site Monitor Agent in the admin sidebar.
-4. Copy the Manager connection key into the website configuration in WP Site Monitor Manager.
-5. Optional: enable signed one-click SSO and select the only administrator allowed to receive login tickets.
-6. Optional: configure Access log path to view recent access log lines in wp-admin.
-7. For daily log files, use placeholders such as `/var/log/nginx/example.com-{Y-m-d}.access.log`.
-8. In Account permissions, select the users allowed to access the Agent and grant only the required permissions.
+1. Tải plugin lên website WordPress con.
+2. Kích hoạt WP Site Monitor Agent.
+3. Mở WP Site Monitor Agent trong thanh bên quản trị.
+4. Sao chép khóa kết nối Manager vào cấu hình website tương ứng trong WP Site Monitor Manager.
+5. Tùy chọn: bật đăng nhập nhanh SSO đã ký và chọn duy nhất một quản trị viên được phép nhận liên kết đăng nhập.
+6. Tùy chọn: cấu hình đường dẫn nhật ký truy cập để xem các dòng gần nhất trong wp-admin.
+7. Với tệp nhật ký theo ngày, dùng các biến như `/var/log/nginx/example.com-{Y-m-d}.access.log`.
+8. Trong phần phân quyền tài khoản, chọn người dùng được phép truy cập Agent và chỉ cấp các quyền cần thiết.
 
 == Account permissions ==
 
-The Agent page supports an explicit allowlist. Permissions are independent: an account may receive plugin management permissions without being allowed to open the Agent menu.
+Trang Agent hỗ trợ danh sách tài khoản được phép truy cập. Các quyền hoạt động độc lập: một tài khoản có thể nhận quyền quản lý plugin mà không được phép mở menu Agent.
 
-* Access Agent: allows opening the Agent page.
-* View log files: allows viewing the configured access log file.
-* Edit Agent settings: allows editing Agent configuration.
-* Manage plugins: grants WordPress plugin activate, update, and delete capabilities.
-* Install plugins: grants the WordPress plugin installation and ZIP upload capabilities.
-* Manage themes: grants WordPress theme switching, options, update, and delete capabilities.
-* Edit plugin/theme files: grants WordPress plugin and theme file editor capabilities. Enable this only for trusted users and only when required.
+* Truy cập Agent: cho phép mở trang Agent.
+* Xem tệp nhật ký: cho phép xem tệp nhật ký truy cập đã cấu hình.
+* Sửa cài đặt Agent: cho phép chỉnh sửa cấu hình Agent.
+* Quản lý plugin: cấp quyền kích hoạt, cập nhật và xóa plugin WordPress.
+* Cài plugin: cấp quyền cài plugin WordPress và tải tệp ZIP lên.
+* Quản lý giao diện: cấp quyền chuyển đổi, tùy chỉnh, cập nhật và xóa giao diện WordPress.
+* Sửa tệp plugin/giao diện: cấp quyền dùng trình sửa tệp plugin và giao diện của WordPress. Chỉ bật cho tài khoản tin cậy và khi thực sự cần thiết.
 
-At least one administrator must retain Access Agent and Edit Agent settings permissions to prevent configuration lockout.
+Ít nhất một quản trị viên phải giữ quyền truy cập Agent và sửa cài đặt Agent để tránh mất quyền truy cập cấu hình.
 
-When Quick login SSO is enabled, the selected administrator account cannot be deleted. Disable SSO or select another administrator before deleting that account.
+Khi đăng nhập nhanh SSO đang bật, tài khoản quản trị viên được chọn không thể bị xóa. Hãy tắt SSO hoặc chọn quản trị viên khác trước khi xóa tài khoản đó.
 
 == Changelog ==
 
 = 2.0.2 =
-Updated release packaging compatibility for WordPress plugin updates.
+Cập nhật khả năng tương thích của gói release với cơ chế cập nhật plugin WordPress.
 
 = 2.0.0 =
-Added production security hardening, signed Manager communication, restricted SSO, account permission management, theme management permissions, protected SSO accounts, and the redesigned Agent admin interface.
+Bổ sung bảo mật cho môi trường production, giao tiếp Manager có chữ ký, giới hạn SSO, quản lý quyền tài khoản, quyền quản lý giao diện, bảo vệ tài khoản SSO và thiết kế lại giao diện quản trị Agent.
 
 = 1.0.3 =
-Added per-site HMAC authentication, replay protection, signed inventory requests, and opt-in restricted SSO.
+Bổ sung xác thực HMAC theo từng website, chống phát lại yêu cầu, yêu cầu tải thông tin kỹ thuật có chữ ký và tùy chọn giới hạn SSO.
 
 = 1.0.2 =
-Removed backup and malware scan modules. Retained health status and access log viewer.
+Loại bỏ các mô-đun sao lưu và quét mã độc. Giữ lại trạng thái hoạt động và trình xem nhật ký truy cập.

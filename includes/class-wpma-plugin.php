@@ -186,7 +186,7 @@ class WPMA_Plugin {
 
 	public static function rest_inventory( WP_REST_Request $request ) {
 		if ( ! self::sso_transport_allowed() ) {
-			return new WP_Error( 'wpma_inventory_https_required', 'Inventory yêu cầu website con sử dụng HTTPS.', array( 'status' => 403 ) );
+			return new WP_Error( 'wpma_inventory_https_required', 'Tải thông tin kỹ thuật yêu cầu website con sử dụng HTTPS.', array( 'status' => 403 ) );
 		}
 
 		$verified = self::verify_manager_signature( $request );
@@ -453,7 +453,7 @@ class WPMA_Plugin {
 
 	public static function prevent_sso_user_deletion( $user_id ) {
 		if ( self::is_protected_sso_user( $user_id ) ) {
-			wp_die( esc_html__( 'Không thể xóa tài khoản đang được chọn cho Quick login SSO. Hãy tắt SSO hoặc chọn tài khoản khác trước.', 'wp-site-monitor-agent' ), '', array( 'response' => 403 ) );
+			wp_die( esc_html__( 'Không thể xóa tài khoản đang được chọn cho đăng nhập nhanh SSO. Hãy tắt SSO hoặc chọn tài khoản khác trước.', 'wp-site-monitor-agent' ), '', array( 'response' => 403 ) );
 		}
 	}
 
@@ -518,7 +518,7 @@ class WPMA_Plugin {
 		if ( ! empty( $settings['enable_sso'] ) ) {
 			$sso_user = $settings['sso_user_id'] ? get_user_by( 'id', $settings['sso_user_id'] ) : false;
 			if ( ! $sso_user || ! user_can( $sso_user, 'manage_options' ) ) {
-				add_settings_error( 'wpma_messages', 'wpma_sso_admin_required', __( 'Quick login SSO yêu cầu chọn một tài khoản quản trị viên hợp lệ.', 'wp-site-monitor-agent' ), 'error' );
+				add_settings_error( 'wpma_messages', 'wpma_sso_admin_required', __( 'Đăng nhập nhanh SSO yêu cầu chọn một tài khoản quản trị viên hợp lệ.', 'wp-site-monitor-agent' ), 'error' );
 				return;
 			}
 		}
@@ -550,7 +550,7 @@ class WPMA_Plugin {
 		if ( class_exists( 'WPMA_GitHub_Updater' ) ) {
 			WPMA_GitHub_Updater::clear_cache();
 		}
-		add_settings_error( 'wpma_messages', 'wpma_saved', __( 'Agent settings saved.', 'wp-site-monitor-agent' ), 'updated' );
+		add_settings_error( 'wpma_messages', 'wpma_saved', __( 'Đã lưu cài đặt Agent.', 'wp-site-monitor-agent' ), 'updated' );
 	}
 
 	public static function render_settings_page() {
@@ -565,7 +565,7 @@ class WPMA_Plugin {
 			<header class="wpma-page-header">
 				<div class="wpma-page-icon"><span class="dashicons dashicons-shield-alt"></span></div>
 				<div><h1><?php esc_html_e( 'WP Site Monitor Agent', 'wp-site-monitor-agent' ); ?></h1>
-				<p><?php esc_html_e( 'Kết nối website này với WP Site Monitor Manager, cấu hình đăng nhập nhanh và kiểm tra access log.', 'wp-site-monitor-agent' ); ?></p></div>
+				<p><?php esc_html_e( 'Kết nối website này với WP Site Monitor Manager, cấu hình đăng nhập nhanh và kiểm tra nhật ký truy cập.', 'wp-site-monitor-agent' ); ?></p></div>
 			</header>
 			<?php settings_errors( 'wpma_messages' ); ?>
 			<?php if ( $can_manage_settings ) : ?>
@@ -575,44 +575,44 @@ class WPMA_Plugin {
 					<div class="wpma-card-heading"><h2><?php esc_html_e( 'Cấu hình Agent', 'wp-site-monitor-agent' ); ?></h2><p><?php esc_html_e( 'Thiết lập kết nối với Manager và nguồn dữ liệu nhật ký máy chủ.', 'wp-site-monitor-agent' ); ?></p></div>
 				<table class="form-table wpma-form-table" role="presentation">
 					<tr>
-						<th><?php esc_html_e( 'Agent endpoint', 'wp-site-monitor-agent' ); ?></th>
+						<th><?php esc_html_e( 'Điểm kết nối Agent', 'wp-site-monitor-agent' ); ?></th>
 						<td>
 							<code><?php echo esc_html( rest_url( 'wpma/v1/status' ) ); ?></code>
-							<p class="description"><?php esc_html_e( 'Health status endpoint for WP Site Monitor Manager.', 'wp-site-monitor-agent' ); ?></p>
+							<p class="description"><?php esc_html_e( 'Điểm kết nối trạng thái dành cho WP Site Monitor Manager.', 'wp-site-monitor-agent' ); ?></p>
 						</td>
 					</tr>
 					<tr>
-						<th><label for="agent_secret"><?php esc_html_e( 'Manager connection key', 'wp-site-monitor-agent' ); ?></label></th>
+						<th><label for="agent_secret"><?php esc_html_e( 'Khóa kết nối Manager', 'wp-site-monitor-agent' ); ?></label></th>
 						<td>
 							<input id="agent_secret" type="text" class="large-text code" value="<?php echo esc_attr( $settings['agent_secret'] ); ?>" readonly>
-							<p class="description"><?php esc_html_e( 'Copy this key into the website configuration in WP Site Monitor Manager. Rotate it if you suspect exposure.', 'wp-site-monitor-agent' ); ?></p>
-							<label><input type="checkbox" name="regenerate_agent_secret" value="1"> <?php esc_html_e( 'Generate a new key when saving settings', 'wp-site-monitor-agent' ); ?></label>
+							<p class="description"><?php esc_html_e( 'Sao chép khóa này vào cấu hình website tương ứng trong WP Site Monitor Manager. Hãy tạo khóa mới nếu nghi ngờ khóa đã bị lộ.', 'wp-site-monitor-agent' ); ?></p>
+							<label><input type="checkbox" name="regenerate_agent_secret" value="1"> <?php esc_html_e( 'Tạo khóa mới khi lưu cài đặt', 'wp-site-monitor-agent' ); ?></label>
 						</td>
 					</tr>
 					<tr>
-						<th><?php esc_html_e( 'Quick login SSO', 'wp-site-monitor-agent' ); ?></th>
+						<th><?php esc_html_e( 'Đăng nhập nhanh SSO', 'wp-site-monitor-agent' ); ?></th>
 						<td>
-							<label><input type="checkbox" name="enable_sso" value="1" <?php checked( $settings['enable_sso'] ); ?>> <?php esc_html_e( 'Allow signed one-click login requests from the manager', 'wp-site-monitor-agent' ); ?></label>
-							<p><select name="sso_user_id"><option value="0"><?php esc_html_e( 'Select an administrator', 'wp-site-monitor-agent' ); ?></option><?php foreach ( get_users( array( 'role' => 'administrator' ) ) as $admin_user ) : ?><option value="<?php echo esc_attr( $admin_user->ID ); ?>" <?php selected( $settings['sso_user_id'], $admin_user->ID ); ?>><?php echo esc_html( $admin_user->user_login ); ?></option><?php endforeach; ?></select></p>
-							<p class="description"><?php esc_html_e( 'Only the selected administrator can receive a one-click login ticket.', 'wp-site-monitor-agent' ); ?></p>
+							<label><input type="checkbox" name="enable_sso" value="1" <?php checked( $settings['enable_sso'] ); ?>> <?php esc_html_e( 'Cho phép Manager gửi yêu cầu đăng nhập nhanh đã ký', 'wp-site-monitor-agent' ); ?></label>
+							<p><select name="sso_user_id"><option value="0"><?php esc_html_e( 'Chọn một quản trị viên', 'wp-site-monitor-agent' ); ?></option><?php foreach ( get_users( array( 'role' => 'administrator' ) ) as $admin_user ) : ?><option value="<?php echo esc_attr( $admin_user->ID ); ?>" <?php selected( $settings['sso_user_id'], $admin_user->ID ); ?>><?php echo esc_html( $admin_user->user_login ); ?></option><?php endforeach; ?></select></p>
+							<p class="description"><?php esc_html_e( 'Chỉ quản trị viên được chọn mới có thể nhận liên kết đăng nhập nhanh.', 'wp-site-monitor-agent' ); ?></p>
 							<p class="description"><?php esc_html_e( 'Khi SSO đang bật, tài khoản được chọn không thể bị xóa. Hãy chọn tài khoản khác hoặc tắt SSO trước khi xóa.', 'wp-site-monitor-agent' ); ?></p>
 						</td>
 					</tr>
 					<tr>
-						<th><?php esc_html_e( 'Visibility', 'wp-site-monitor-agent' ); ?></th>
+						<th><?php esc_html_e( 'Hiển thị', 'wp-site-monitor-agent' ); ?></th>
 						<td>
-							<label><input type="checkbox" name="hide_agent" value="1" <?php checked( $settings['hide_agent'] ); ?>> <?php esc_html_e( 'Hide this agent from the Plugins list and Settings menu', 'wp-site-monitor-agent' ); ?></label>
+							<label><input type="checkbox" name="hide_agent" value="1" <?php checked( $settings['hide_agent'] ); ?>> <?php esc_html_e( 'Ẩn Agent khỏi danh sách plugin và menu cài đặt', 'wp-site-monitor-agent' ); ?></label>
 						</td>
 					</tr>
 					<tr>
-						<th><label for="access_log_path"><?php esc_html_e( 'Access log path', 'wp-site-monitor-agent' ); ?></label></th>
+						<th><label for="access_log_path"><?php esc_html_e( 'Đường dẫn nhật ký truy cập', 'wp-site-monitor-agent' ); ?></label></th>
 						<td>
 							<input name="access_log_path" id="access_log_path" type="text" class="large-text code" value="<?php echo esc_attr( $settings['access_log_path'] ); ?>" placeholder="/var/log/nginx/example.com-{Y-m-d}.access.log">
-							<p class="description"><?php esc_html_e( 'Absolute path or date pattern. Supported placeholders: {date}, {Y-m-d}, {Ymd}, {Y}, {m}, {d}. The file must be readable by PHP.', 'wp-site-monitor-agent' ); ?></p>
+							<p class="description"><?php esc_html_e( 'Đường dẫn tuyệt đối hoặc mẫu theo ngày. Hỗ trợ các biến: {date}, {Y-m-d}, {Ymd}, {Y}, {m}, {d}. PHP phải có quyền đọc tệp.', 'wp-site-monitor-agent' ); ?></p>
 						</td>
 					</tr>
 					<tr>
-						<th><label for="log_lines"><?php esc_html_e( 'Lines to show', 'wp-site-monitor-agent' ); ?></label></th>
+						<th><label for="log_lines"><?php esc_html_e( 'Số dòng hiển thị', 'wp-site-monitor-agent' ); ?></label></th>
 						<td>
 							<input name="log_lines" id="log_lines" type="number" min="20" max="1000" step="20" value="<?php echo esc_attr( $settings['log_lines'] ); ?>">
 						</td>
@@ -623,7 +623,7 @@ class WPMA_Plugin {
 						<td>
 							<p class="description"><?php esc_html_e( 'Mỗi quyền hoạt động độc lập. Chỉ bật Truy cập Agent nếu tài khoản cần mở trang này; các quyền quản lý plugin vẫn có thể cấp riêng.', 'wp-site-monitor-agent' ); ?></p>
 							<div class="wpma-table-scroll"><table class="widefat striped wpma-permissions-table">
-								<thead><tr><th><?php esc_html_e( 'Tài khoản', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Truy cập Agent', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Xem file log', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Sửa cài đặt Agent', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Quản lý plugin', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Cài plugin', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Quản lý giao diện', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Sửa file plugin/theme', 'wp-site-monitor-agent' ); ?></th></tr></thead>
+								<thead><tr><th><?php esc_html_e( 'Tài khoản', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Truy cập Agent', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Xem tệp nhật ký', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Sửa cài đặt Agent', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Quản lý plugin', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Cài plugin', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Quản lý giao diện', 'wp-site-monitor-agent' ); ?></th><th><?php esc_html_e( 'Sửa tệp plugin/giao diện', 'wp-site-monitor-agent' ); ?></th></tr></thead>
 								<tbody>
 								<?php foreach ( get_users( array( 'orderby' => 'display_name' ) ) as $account ) : $permissions = isset( $settings['authorized_users'][ $account->ID ] ) ? $settings['authorized_users'][ $account->ID ] : array(); ?>
 									<tr>
@@ -639,7 +639,7 @@ class WPMA_Plugin {
 								<?php endforeach; ?>
 								</tbody>
 							</table></div>
-							<p class="description"><?php esc_html_e( 'Cảnh báo: quyền sửa file plugin/theme có thể thay đổi mã nguồn đang chạy. Chỉ bật cho tài khoản tin cậy và sử dụng trong thời gian cần thiết.', 'wp-site-monitor-agent' ); ?></p>
+							<p class="description"><?php esc_html_e( 'Cảnh báo: quyền sửa tệp plugin/giao diện có thể thay đổi mã nguồn đang chạy. Chỉ bật cho tài khoản tin cậy và sử dụng trong thời gian cần thiết.', 'wp-site-monitor-agent' ); ?></p>
 						</td>
 					</tr>
 					<?php endif; ?>
@@ -669,24 +669,24 @@ class WPMA_Plugin {
 		$status = self::log_status( $path );
 		?>
 		<section class="wpma-card wpma-log-card">
-		<div class="wpma-card-heading"><h2><?php esc_html_e( 'Access Log Viewer', 'wp-site-monitor-agent' ); ?></h2>
-		<p><?php esc_html_e( 'Xem nhanh các dòng access log gần nhất mà không cần mở trang quản trị hosting.', 'wp-site-monitor-agent' ); ?></p></div>
+		<div class="wpma-card-heading"><h2><?php esc_html_e( 'Xem nhật ký truy cập', 'wp-site-monitor-agent' ); ?></h2>
+		<p><?php esc_html_e( 'Xem nhanh các dòng nhật ký truy cập gần nhất mà không cần mở trang quản trị máy chủ.', 'wp-site-monitor-agent' ); ?></p></div>
 		<form method="get" action="<?php echo esc_url( admin_url( 'admin.php' ) ); ?>" class="wpma-log-toolbar">
 			<input type="hidden" name="page" value="wp-site-monitor-agent">
-			<label><?php esc_html_e( 'Log date', 'wp-site-monitor-agent' ); ?><br>
+			<label><?php esc_html_e( 'Ngày nhật ký', 'wp-site-monitor-agent' ); ?><br>
 				<input type="date" name="wpma_log_date" value="<?php echo esc_attr( $selected_date ); ?>">
 			</label>
-			<?php submit_button( __( 'View date', 'wp-site-monitor-agent' ), 'secondary', '', false ); ?>
+			<?php submit_button( __( 'Xem ngày', 'wp-site-monitor-agent' ), 'secondary', '', false ); ?>
 		</form>
 		<?php if ( '' === $path ) : ?>
-			<div class="notice notice-info inline"><p><?php esc_html_e( 'Configure an access log path above, then save settings.', 'wp-site-monitor-agent' ); ?></p></div>
+			<div class="notice notice-info inline"><p><?php esc_html_e( 'Hãy cấu hình đường dẫn nhật ký truy cập ở trên rồi lưu cài đặt.', 'wp-site-monitor-agent' ); ?></p></div>
 		<?php elseif ( is_wp_error( $status ) ) : ?>
 			<div class="notice notice-error inline"><p><?php echo esc_html( $status->get_error_message() ); ?></p></div>
 		<?php else : ?>
 			<p>
-				<strong><?php esc_html_e( 'File:', 'wp-site-monitor-agent' ); ?></strong>
+				<strong><?php esc_html_e( 'Tệp:', 'wp-site-monitor-agent' ); ?></strong>
 				<code><?php echo esc_html( $path ); ?></code>
-				<a class="button button-small" href="<?php echo esc_url( add_query_arg( array( 'page' => 'wp-site-monitor-agent', 'wpma_log_date' => $selected_date, 'wpma_log_refresh' => time() ), admin_url( 'admin.php' ) ) ); ?>"><?php esc_html_e( 'Refresh', 'wp-site-monitor-agent' ); ?></a>
+				<a class="button button-small" href="<?php echo esc_url( add_query_arg( array( 'page' => 'wp-site-monitor-agent', 'wpma_log_date' => $selected_date, 'wpma_log_refresh' => time() ), admin_url( 'admin.php' ) ) ); ?>"><?php esc_html_e( 'Làm mới', 'wp-site-monitor-agent' ); ?></a>
 			</p>
 			<pre class="wpma-log-output"><?php echo esc_html( self::read_log_tail( $path, $lines ) ); ?></pre>
 		<?php endif; ?>
@@ -696,16 +696,16 @@ class WPMA_Plugin {
 
 	private static function log_status( $path ) {
 		if ( '' === trim( (string) $path ) ) {
-			return new WP_Error( 'wpma_log_empty', 'Access log path is empty.' );
+			return new WP_Error( 'wpma_log_empty', 'Đường dẫn nhật ký truy cập đang trống.' );
 		}
 		if ( false !== strpos( (string) $path, "\0" ) ) {
-			return new WP_Error( 'wpma_log_invalid', 'Access log path is invalid.' );
+			return new WP_Error( 'wpma_log_invalid', 'Đường dẫn nhật ký truy cập không hợp lệ.' );
 		}
 		if ( ! is_file( $path ) ) {
-			return new WP_Error( 'wpma_log_missing', 'Access log file does not exist.' );
+			return new WP_Error( 'wpma_log_missing', 'Tệp nhật ký truy cập không tồn tại.' );
 		}
 		if ( ! is_readable( $path ) ) {
-			return new WP_Error( 'wpma_log_unreadable', 'Access log file is not readable by PHP.' );
+			return new WP_Error( 'wpma_log_unreadable', 'PHP không có quyền đọc tệp nhật ký truy cập.' );
 		}
 		return true;
 	}
@@ -763,7 +763,7 @@ class WPMA_Plugin {
 
 		$handle = fopen( $path, 'rb' );
 		if ( ! $handle ) {
-			return 'Cannot open log file.';
+			return 'Không thể mở tệp nhật ký.';
 		}
 
 		$offset = max( 0, $size - $max_bytes );
