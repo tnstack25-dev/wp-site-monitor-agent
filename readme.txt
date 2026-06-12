@@ -4,7 +4,7 @@ Tags: monitor, health check, access log, agent
 Requires at least: 5.8
 Tested up to: 6.6
 Requires PHP: 7.4
-Stable tag: 2.1.1
+Stable tag: 2.1.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -44,9 +44,6 @@ Trang Agent hỗ trợ danh sách tài khoản được phép truy cập. Các q
 Khi đăng nhập nhanh SSO đang bật, tài khoản quản trị viên được chọn không thể bị xóa. Hãy tắt SSO hoặc chọn quản trị viên khác trước khi xóa tài khoản đó.
 
 == Changelog ==
-
-= 2.1.1 =
-Bổ sung access log production và bảo vệ khóa kết nối Manager bằng bước xác nhận mật khẩu WordPress hiện tại.
 
 = 2.1.0 =
 Chuẩn hóa văn bản tiếng Việt và cải thiện tài liệu hướng dẫn Agent.
