@@ -12,12 +12,10 @@ class WPMA_Plugin {
 	public static function init() {
 		self::cleanup_removed_feature_settings();
 		self::ensure_agent_secret();
-		WPMA_Access_Logger::init( self::settings() );
 		add_action( 'admin_init', array( __CLASS__, 'maybe_upgrade' ) );
 		add_action( 'admin_menu', array( __CLASS__, 'admin_menu' ) );
 		add_action( 'admin_enqueue_scripts', array( __CLASS__, 'enqueue_admin_assets' ) );
 		add_action( 'admin_init', array( __CLASS__, 'handle_settings_save' ) );
-		add_action( 'admin_post_wpma_reveal_agent_secret', array( __CLASS__, 'reveal_agent_secret' ) );
 		add_action( 'admin_notices', array( __CLASS__, 'show_notice' ) );
 		add_filter( 'all_plugins', array( __CLASS__, 'hide_from_plugins_list' ) );
 		add_filter( 'user_has_cap', array( __CLASS__, 'grant_delegated_capabilities' ), 10, 4 );
@@ -32,10 +30,6 @@ class WPMA_Plugin {
 	public static function defaults() {
 		return array(
 			'hide_agent'      => 0,
-			'enable_access_log' => 0,
-			'access_log_retention_days' => 14,
-			'access_log_max_file_mb' => 50,
-			'access_log_anonymize_ip' => 1,
 			'access_log_path' => '',
 			'log_lines'       => 200,
 			'agent_secret'    => '',
@@ -49,10 +43,6 @@ class WPMA_Plugin {
 		$settings = get_option( self::OPTION, array() );
 		$settings = wp_parse_args( is_array( $settings ) ? $settings : array(), self::defaults() );
 		$settings['hide_agent'] = ! empty( $settings['hide_agent'] ) ? 1 : 0;
-		$settings['enable_access_log'] = ! empty( $settings['enable_access_log'] ) ? 1 : 0;
-		$settings['access_log_retention_days'] = min( 365, max( 1, absint( $settings['access_log_retention_days'] ) ) );
-		$settings['access_log_max_file_mb'] = min( 1024, max( 1, absint( $settings['access_log_max_file_mb'] ) ) );
-		$settings['access_log_anonymize_ip'] = ! empty( $settings['access_log_anonymize_ip'] ) ? 1 : 0;
 		$settings['access_log_path'] = isset( $settings['access_log_path'] ) ? (string) $settings['access_log_path'] : '';
 		$settings['log_lines'] = min( 1000, max( 20, absint( $settings['log_lines'] ) ) );
 		$settings['agent_secret'] = isset( $settings['agent_secret'] ) ? (string) $settings['agent_secret'] : '';
@@ -72,16 +62,14 @@ class WPMA_Plugin {
 
 	public static function activate() {
 		self::ensure_agent_secret();
-		WPMA_Access_Logger::schedule_cleanup();
 		update_option( 'wpma_plugin_version', WPMA_VERSION, false );
 	}
 
 	public static function deactivate() {
-		wp_clear_scheduled_hook( WPMA_Access_Logger::CLEANUP_HOOK );
+		// No scheduled tasks are required. The manager calls this agent on demand.
 	}
 
 	public static function maybe_upgrade() {
-		WPMA_Access_Logger::schedule_cleanup();
 		if ( get_option( 'wpma_plugin_version' ) === WPMA_VERSION ) {
 			return;
 		}
@@ -91,10 +79,6 @@ class WPMA_Plugin {
 			$settings = wp_parse_args( $settings, self::defaults() );
 			$settings = array(
 				'hide_agent'      => ! empty( $settings['hide_agent'] ) ? 1 : 0,
-				'enable_access_log' => ! empty( $settings['enable_access_log'] ) ? 1 : 0,
-				'access_log_retention_days' => isset( $settings['access_log_retention_days'] ) ? min( 365, max( 1, absint( $settings['access_log_retention_days'] ) ) ) : 14,
-				'access_log_max_file_mb' => isset( $settings['access_log_max_file_mb'] ) ? min( 1024, max( 1, absint( $settings['access_log_max_file_mb'] ) ) ) : 50,
-				'access_log_anonymize_ip' => ! empty( $settings['access_log_anonymize_ip'] ) ? 1 : 0,
 				'access_log_path' => isset( $settings['access_log_path'] ) ? self::sanitize_log_path( $settings['access_log_path'] ) : '',
 				'log_lines'       => isset( $settings['log_lines'] ) ? min( 1000, max( 20, absint( $settings['log_lines'] ) ) ) : 200,
 				'agent_secret'    => isset( $settings['agent_secret'] ) ? (string) $settings['agent_secret'] : '',
@@ -524,10 +508,6 @@ class WPMA_Plugin {
 		$current  = self::settings();
 		$settings = array(
 			'hide_agent'      => ! empty( $_POST['hide_agent'] ) ? 1 : 0,
-			'enable_access_log' => ! empty( $_POST['enable_access_log'] ) ? 1 : 0,
-			'access_log_retention_days' => isset( $_POST['access_log_retention_days'] ) ? min( 365, max( 1, absint( $_POST['access_log_retention_days'] ) ) ) : 14,
-			'access_log_max_file_mb' => isset( $_POST['access_log_max_file_mb'] ) ? min( 1024, max( 1, absint( $_POST['access_log_max_file_mb'] ) ) ) : 50,
-			'access_log_anonymize_ip' => ! empty( $_POST['access_log_anonymize_ip'] ) ? 1 : 0,
 			'access_log_path' => isset( $_POST['access_log_path'] ) ? self::sanitize_log_path( wp_unslash( $_POST['access_log_path'] ) ) : '',
 			'log_lines'       => isset( $_POST['log_lines'] ) ? min( 1000, max( 20, absint( $_POST['log_lines'] ) ) ) : 200,
 			'agent_secret'    => ! empty( $current['agent_secret'] ) ? (string) $current['agent_secret'] : bin2hex( random_bytes( 32 ) ),
@@ -573,28 +553,6 @@ class WPMA_Plugin {
 		add_settings_error( 'wpma_messages', 'wpma_saved', __( 'Đã lưu cài đặt Agent.', 'wp-site-monitor-agent' ), 'updated' );
 	}
 
-	public static function reveal_agent_secret() {
-		if ( ! self::current_user_can_manage_settings() ) {
-			wp_die( esc_html__( 'Bạn không có quyền xem khóa kết nối Manager.', 'wp-site-monitor-agent' ), '', array( 'response' => 403 ) );
-		}
-
-		check_admin_referer( 'wpma_reveal_agent_secret', 'wpma_reveal_nonce' );
-		$user = wp_get_current_user();
-		$rate_key = 'wpma_secret_reveal_rate_' . (int) $user->ID;
-		$attempts = (int) get_transient( $rate_key );
-		$password = isset( $_POST['confirmation_password'] ) ? (string) wp_unslash( $_POST['confirmation_password'] ) : '';
-		if ( $attempts >= 5 || '' === $password || ! wp_check_password( $password, (string) $user->user_pass, (int) $user->ID ) ) {
-			set_transient( $rate_key, $attempts + 1, 5 * MINUTE_IN_SECONDS );
-			self::set_secret_notice( 'error', $attempts >= 5 ? __( 'Bạn đã thử sai quá nhiều lần. Vui lòng thử lại sau 5 phút.', 'wp-site-monitor-agent' ) : __( 'Mật khẩu xác nhận không chính xác.', 'wp-site-monitor-agent' ) );
-			self::redirect_to_settings();
-		}
-
-		delete_transient( $rate_key );
-		$token = bin2hex( random_bytes( 32 ) );
-		set_transient( 'wpma_secret_reveal_' . hash( 'sha256', $token ), array( 'user_id' => (int) $user->ID ), MINUTE_IN_SECONDS );
-		self::redirect_to_settings( array( 'reveal_secret' => $token ) );
-	}
-
 	public static function render_settings_page() {
 		if ( ! self::current_user_can_access_agent() ) {
 			wp_die( esc_html__( 'Bạn không có quyền truy cập WP Site Monitor Agent.', 'wp-site-monitor-agent' ), '', array( 'response' => 403 ) );
@@ -602,7 +560,6 @@ class WPMA_Plugin {
 
 		$settings = self::settings();
 		$can_manage_settings = self::current_user_can_manage_settings();
-		$revealed_agent_secret = $can_manage_settings ? self::consume_agent_secret_reveal( $settings ) : '';
 		?>
 		<div class="wrap wpma-wrap">
 			<header class="wpma-page-header">
@@ -611,19 +568,7 @@ class WPMA_Plugin {
 				<p><?php esc_html_e( 'Kết nối website này với WP Site Monitor Manager, cấu hình đăng nhập nhanh và kiểm tra nhật ký truy cập.', 'wp-site-monitor-agent' ); ?></p></div>
 			</header>
 			<?php settings_errors( 'wpma_messages' ); ?>
-			<?php $secret_notice = get_transient( 'wpma_secret_notice_' . get_current_user_id() ); ?>
-			<?php if ( is_array( $secret_notice ) ) : delete_transient( 'wpma_secret_notice_' . get_current_user_id() ); ?>
-				<div class="notice notice-<?php echo esc_attr( $secret_notice['type'] ); ?> inline"><p><?php echo esc_html( $secret_notice['message'] ); ?></p></div>
-			<?php endif; ?>
-			<?php $log_error = get_transient( WPMA_Access_Logger::ERROR_TRANSIENT ); ?>
-			<?php if ( is_array( $log_error ) && ! empty( $log_error['message'] ) ) : ?>
-				<div class="notice notice-error inline"><p><?php echo esc_html( $log_error['message'] ); ?></p></div>
-			<?php endif; ?>
 			<?php if ( $can_manage_settings ) : ?>
-			<form id="wpma-reveal-agent-secret" method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
-				<input type="hidden" name="action" value="wpma_reveal_agent_secret">
-				<?php wp_nonce_field( 'wpma_reveal_agent_secret', 'wpma_reveal_nonce' ); ?>
-			</form>
 			<form method="post" action="" class="wpma-settings-form">
 				<?php wp_nonce_field( 'wpma_save_settings', 'wpma_nonce' ); ?>
 				<div class="wpma-card">
@@ -639,14 +584,8 @@ class WPMA_Plugin {
 					<tr>
 						<th><label for="agent_secret"><?php esc_html_e( 'Khóa kết nối Manager', 'wp-site-monitor-agent' ); ?></label></th>
 						<td>
-							<?php if ( '' !== $revealed_agent_secret ) : ?>
-								<input id="agent_secret" type="text" class="large-text code" value="<?php echo esc_attr( $revealed_agent_secret ); ?>" readonly autocomplete="off">
-								<p class="description"><?php esc_html_e( 'Khóa chỉ hiển thị một lần. Tải lại trang để ẩn khóa.', 'wp-site-monitor-agent' ); ?></p>
-							<?php else : ?>
-								<input type="password" name="confirmation_password" form="wpma-reveal-agent-secret" autocomplete="current-password" placeholder="<?php esc_attr_e( 'Mật khẩu WordPress hiện tại', 'wp-site-monitor-agent' ); ?>" required>
-								<button type="submit" form="wpma-reveal-agent-secret" class="button"><?php esc_html_e( 'Xác nhận và xem khóa', 'wp-site-monitor-agent' ); ?></button>
-								<p class="description"><?php esc_html_e( 'Nhập mật khẩu của tài khoản WordPress đang đăng nhập để hiển thị khóa kết nối.', 'wp-site-monitor-agent' ); ?></p>
-							<?php endif; ?>
+							<input id="agent_secret" type="text" class="large-text code" value="<?php echo esc_attr( $settings['agent_secret'] ); ?>" readonly>
+							<p class="description"><?php esc_html_e( 'Sao chép khóa này vào cấu hình website tương ứng trong WP Site Monitor Manager. Hãy tạo khóa mới nếu nghi ngờ khóa đã bị lộ.', 'wp-site-monitor-agent' ); ?></p>
 							<label><input type="checkbox" name="regenerate_agent_secret" value="1"> <?php esc_html_e( 'Tạo khóa mới khi lưu cài đặt', 'wp-site-monitor-agent' ); ?></label>
 						</td>
 					</tr>
@@ -666,38 +605,10 @@ class WPMA_Plugin {
 						</td>
 					</tr>
 					<tr>
-						<th><?php esc_html_e( 'Ghi access log tự động', 'wp-site-monitor-agent' ); ?></th>
-						<td>
-							<label><input type="checkbox" name="enable_access_log" value="1" <?php checked( $settings['enable_access_log'] ); ?>> <?php esc_html_e( 'Ghi lại các request đi qua WordPress theo thời gian thực', 'wp-site-monitor-agent' ); ?></label>
-							<p class="description"><?php esc_html_e( 'Log được ghi theo ngày sau khi request hoàn tất. Tài nguyên do máy chủ phục vụ trực tiếp như ảnh, CSS và JavaScript không đi qua WordPress sẽ không xuất hiện.', 'wp-site-monitor-agent' ); ?></p>
-							<p><code><?php echo esc_html( WPMA_Access_Logger::log_pattern() ); ?></code></p>
-						</td>
-					</tr>
-					<tr>
-						<th><label for="access_log_retention_days"><?php esc_html_e( 'Thời gian lưu log tự động', 'wp-site-monitor-agent' ); ?></label></th>
-						<td>
-							<input name="access_log_retention_days" id="access_log_retention_days" type="number" min="1" max="365" value="<?php echo esc_attr( $settings['access_log_retention_days'] ); ?>"> <?php esc_html_e( 'ngày', 'wp-site-monitor-agent' ); ?>
-						</td>
-					</tr>
-					<tr>
-						<th><label for="access_log_max_file_mb"><?php esc_html_e( 'Giới hạn tệp log', 'wp-site-monitor-agent' ); ?></label></th>
-						<td>
-							<input name="access_log_max_file_mb" id="access_log_max_file_mb" type="number" min="1" max="1024" value="<?php echo esc_attr( $settings['access_log_max_file_mb'] ); ?>"> MB
-							<p class="description"><?php esc_html_e( 'Khi đạt giới hạn, Agent chuyển sang một phần log mới trong cùng ngày để tránh tệp tăng không kiểm soát.', 'wp-site-monitor-agent' ); ?></p>
-						</td>
-					</tr>
-					<tr>
-						<th><?php esc_html_e( 'Quyền riêng tư', 'wp-site-monitor-agent' ); ?></th>
-						<td>
-							<label><input type="checkbox" name="access_log_anonymize_ip" value="1" <?php checked( $settings['access_log_anonymize_ip'] ); ?>> <?php esc_html_e( 'Ẩn danh địa chỉ IP trước khi ghi log', 'wp-site-monitor-agent' ); ?></label>
-							<p class="description"><?php esc_html_e( 'IPv4 được xóa octet cuối; IPv6 chỉ giữ 48 bit đầu. Query string và cookie không bao giờ được ghi.', 'wp-site-monitor-agent' ); ?></p>
-						</td>
-					</tr>
-					<tr>
 						<th><label for="access_log_path"><?php esc_html_e( 'Đường dẫn nhật ký truy cập', 'wp-site-monitor-agent' ); ?></label></th>
 						<td>
 							<input name="access_log_path" id="access_log_path" type="text" class="large-text code" value="<?php echo esc_attr( $settings['access_log_path'] ); ?>" placeholder="/var/log/nginx/example.com-{Y-m-d}.access.log">
-							<p class="description"><?php esc_html_e( 'Tùy chọn dành cho access log có sẵn của Nginx/Apache. Khi ghi log tự động được bật, trình xem bên dưới ưu tiên log do Agent tạo.', 'wp-site-monitor-agent' ); ?></p>
+							<p class="description"><?php esc_html_e( 'Đường dẫn tuyệt đối hoặc mẫu theo ngày. Hỗ trợ các biến: {date}, {Y-m-d}, {Ymd}, {Y}, {m}, {d}. PHP phải có quyền đọc tệp.', 'wp-site-monitor-agent' ); ?></p>
 						</td>
 					</tr>
 					<tr>
@@ -751,33 +662,9 @@ class WPMA_Plugin {
 		settings_errors( 'wpma_messages' );
 	}
 
-	private static function consume_agent_secret_reveal( $settings ) {
-		$token = isset( $_GET['reveal_secret'] ) ? strtolower( sanitize_text_field( wp_unslash( $_GET['reveal_secret'] ) ) ) : '';
-		if ( ! preg_match( '/^[a-f0-9]{64}$/', $token ) ) {
-			return '';
-		}
-		$key = 'wpma_secret_reveal_' . hash( 'sha256', $token );
-		$grant = get_transient( $key );
-		delete_transient( $key );
-		if ( ! is_array( $grant ) || (int) ( $grant['user_id'] ?? 0 ) !== get_current_user_id() ) {
-			return '';
-		}
-		return (string) ( $settings['agent_secret'] ?? '' );
-	}
-
-	private static function set_secret_notice( $type, $message ) {
-		set_transient( 'wpma_secret_notice_' . get_current_user_id(), array( 'type' => $type, 'message' => $message ), MINUTE_IN_SECONDS );
-	}
-
-	private static function redirect_to_settings( $args = array() ) {
-		$url = add_query_arg( array_merge( array( 'page' => 'wp-site-monitor-agent' ), $args ), admin_url( 'admin.php' ) );
-		wp_safe_redirect( $url );
-		exit;
-	}
-
 	private static function render_log_viewer( $settings ) {
 		$selected_date = self::selected_log_date();
-		$path = ! empty( $settings['enable_access_log'] ) ? WPMA_Access_Logger::view_file( $selected_date ) : self::resolve_log_path( (string) $settings['access_log_path'], $selected_date );
+		$path = self::resolve_log_path( (string) $settings['access_log_path'], $selected_date );
 		$lines = (int) $settings['log_lines'];
 		$status = self::log_status( $path );
 		?>
